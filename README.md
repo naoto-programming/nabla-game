@@ -13,7 +13,8 @@ Additionally, the math engine implements a custom Computer Algebra System (CAS) 
 
 ### Play online
 
-The live version of the game is hosted here, no install required: https://nabla-game.netlify.app.
+- https://nabla-game.netlify.app
+- https://naoto-programming.github.io/nabla-game/
 
 ### Run it locally
 
@@ -21,7 +22,7 @@ To build and run the game yourself:
 
 1. Install [Rust](https://www.rust-lang.org/tools/install), [Node.js](https://nodejs.org/), and [Yarn](https://yarnpkg.com/).
 2. Add the WASM build target: `rustup target add wasm32-unknown-unknown`.
-3. Install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) (used by the webpack build to compile the Rust code to WASM).
+3. Install the matching `wasm-bindgen-cli` (must be the exact same version as the `wasm-bindgen` crate in `Cargo.lock`): `cargo install wasm-bindgen-cli --version <version> --locked`.
 4. Install JS dependencies: `yarn install`.
 5. Start the dev server: `yarn start` — this builds the WASM binary, launches a local server, and opens the game in your browser.
 

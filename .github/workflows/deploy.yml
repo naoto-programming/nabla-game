@@ -26,33 +26,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: jetli/wasm-pack-action@v0.4.0
-        with:
-          version: 'v0.12.1'
-
-      # installed up front, pinned to the exact version wasm-bindgen resolves to in
-      # Cargo.lock, since wasm-pack's own auto-install of a matching wasm-bindgen-cli
-      # fails (schema mismatch) when it has to pick the version itself
+      # pinned to the exact version wasm-bindgen resolves to in Cargo.lock --
+      # the wasm-bindgen crate and wasm-bindgen-cli versions must match exactly
       - run: cargo install wasm-bindgen-cli --version 0.2.100 --locked
-
-      # the wasm-opt binary wasm-pack bundles/downloads itself (and apt's
-      # binaryen package) are too old to parse wasm output from current
-      # rustc ("invalid code after misc prefix"); install a current release
-      # from upstream and put it on PATH, since wasm-pack prefers a wasm-opt
-      # it finds on PATH over downloading its own
-      - run: |
-          curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz | tar xz
-          echo "$PWD/binaryen-version_132/bin" >> "$GITHUB_PATH"
-      - run: wasm-opt --version
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: yarn
-
-      - run: cargo build --lib --release --target wasm32-unknown-unknown
-      - run: wasm-bindgen target/wasm32-unknown-unknown/release/nabla_game.wasm --out-dir pkg --out-name index --target bundler
-      - run: ls -la pkg
 
       - run: yarn install --frozen-lockfile
       - run: yarn build

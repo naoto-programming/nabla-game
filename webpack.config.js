@@ -1,7 +1,5 @@
 const path = require('path');
 const CopyPlugin = require('copy-webpack-plugin');
-const WasmPackPlugin = require('@wasm-tool/wasm-pack-plugin');
-const { argv } = require('process');
 
 const dist = path.resolve(__dirname, 'dist');
 
@@ -35,11 +33,8 @@ module.exports = {
 			directory: dist,
 		},
 	},
-	plugins: [
-		new CopyPlugin({ patterns: [path.resolve(__dirname, 'static')] }),
-		new WasmPackPlugin({
-			crateDirectory: __dirname,
-			forceMode: argv.mode,
-		}),
-	],
+	// the wasm crate is built separately by `yarn build:wasm` (see package.json) into pkg/,
+	// since wasm-pack (previously used here via WasmPackPlugin) fails against current
+	// rustc/cargo with "invalid type: map, expected a string" -- an unresolved wasm-pack bug
+	plugins: [new CopyPlugin({ patterns: [path.resolve(__dirname, 'static')] })],
 };
