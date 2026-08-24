@@ -16,7 +16,11 @@ export const js_render_katex = str => {
 };
 
 /**
- * Finds the element with id `id`, creating one if not present and renders a KaTeX expression to it
+ * Finds the element with id `id`, creating one if not present and renders a KaTeX expression to it.
+ * Skips the actual (expensive) KaTeX layout when `str` matches what's already rendered on the
+ * element -- draw() re-runs this for every visible card on every animation frame (eg. while a
+ * completely unrelated card is being hovered or dealt), so this avoids relaying out long field
+ * expressions dozens of times a second for content that hasn't changed.
  * @param {String} str - The KaTeX expression to render
  * @param {String} id - The id of the element on which to render the expression
  * @returns DOMElement - The rendered element
@@ -30,6 +34,11 @@ export const js_render_katex_element = (str, id) => {
 		document.getElementById('katex').appendChild(element);
 	}
 
+	if (element && element.dataset.katexSource === str) {
+		return element;
+	}
+
 	katex.render(str, element, { throwOnError: false, displayMode: true });
+	if (element) element.dataset.katexSource = str;
 	return element;
 };
