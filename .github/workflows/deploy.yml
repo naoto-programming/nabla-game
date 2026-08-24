@@ -28,7 +28,7 @@ jobs:
 
       - uses: jetli/wasm-pack-action@v0.4.0
         with:
-          version: 'latest'
+          version: '0.12.1'
 
       # installed up front, pinned to the exact version wasm-bindgen resolves to in
       # Cargo.lock, since wasm-pack's own auto-install of a matching wasm-bindgen-cli
