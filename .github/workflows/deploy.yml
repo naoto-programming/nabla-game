@@ -24,9 +24,16 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      - uses: Swatinem/rust-cache@v2
+
       - uses: jetli/wasm-pack-action@v0.4.0
         with:
           version: 'latest'
+
+      # installed up front, pinned to the exact version wasm-bindgen resolves to in
+      # Cargo.lock, since wasm-pack's own auto-install of a matching wasm-bindgen-cli
+      # fails (schema mismatch) when it has to pick the version itself
+      - run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
 
       - uses: actions/setup-node@v4
         with:
