@@ -7,36 +7,9 @@ use crate::render::util::RenderId;
 // root imports
 use crate::MENU;
 // local imports
+use super::card_counts::get_new_deck;
 use super::cards::*;
 use super::field::*;
-
-/// helper function to create new deck Vec
-fn get_new_deck() -> Vec<Card> {
-    let mut deck = vec![];
-    deck.extend(vec![Card::BasisCard(BasisCard::Zero); 2]);
-    deck.extend(vec![Card::BasisCard(BasisCard::One); 4 - 2]); // subtract 2 for starting board
-    deck.extend(vec![Card::BasisCard(BasisCard::X); 7 - 2]); // subtract 2 for starting board
-    deck.extend(vec![Card::BasisCard(BasisCard::X2); 3 - 2]); // subtract 2 for starting board
-    deck.extend(vec![Card::BasisCard(BasisCard::Cos); 4]);
-    deck.extend(vec![Card::BasisCard(BasisCard::Sin); 4]);
-    deck.extend(vec![Card::BasisCard(BasisCard::E); 4]);
-    deck.extend(vec![Card::AlgebraicCard(AlgebraicCard::Div); 5]);
-    deck.extend(vec![Card::AlgebraicCard(AlgebraicCard::Mult); 5]);
-    deck.extend(vec![Card::AlgebraicCard(AlgebraicCard::Sqrt); 5]);
-    deck.extend(vec![Card::AlgebraicCard(AlgebraicCard::Inverse); 5]);
-    deck.extend(vec![Card::AlgebraicCard(AlgebraicCard::Log); 5]);
-    deck.extend(vec![Card::DerivativeCard(DerivativeCard::Derivative); 8]);
-    deck.extend(vec![Card::DerivativeCard(DerivativeCard::Integral); 8]);
-    deck.extend(vec![Card::DerivativeCard(DerivativeCard::Nabla); 10]);
-    deck.extend(vec![Card::DerivativeCard(DerivativeCard::Laplacian); 2]);
-    deck.extend(vec![Card::LimitCard(LimitCard::LimPosInf); 2]);
-    deck.extend(vec![Card::LimitCard(LimitCard::LimNegInf); 2]);
-    deck.extend(vec![Card::LimitCard(LimitCard::Lim0); 2]);
-    deck.extend(vec![Card::LimitCard(LimitCard::Liminf); 1]);
-    deck.extend(vec![Card::LimitCard(LimitCard::Limsup); 1]);
-
-    return deck;
-}
 
 // helper function to shuffle deck and deal cards to player hands
 fn create_players(deck: &mut Vec<Card>) -> (Vec<Card>, Vec<Card>) {

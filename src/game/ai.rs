@@ -5,7 +5,7 @@ use gloo::timers::callback::Timeout;
 use rand::Rng;
 // outer crate imports
 use crate::basis::structs::*;
-use crate::events::mousedown_handler::branch_turn_phase;
+use crate::events::mousedown_handler::{branch_turn_phase, next_turn};
 use crate::game::cards::*;
 use crate::game::field::Field;
 use crate::game::structs::*;
@@ -67,8 +67,13 @@ pub fn maybe_take_ai_turn() {
 fn take_ai_turn() {
     let candidates = generate_candidates();
     if candidates.is_empty() {
-        // no legal move within the set the AI can evaluate (eg. hand is all Mult/Div
-        // with no fitting field pair); nothing to do this turn
+        // no legal move within the set the AI can evaluate (eg. hand is entirely
+        // basis cards with no empty field slot to play them into). A human in this
+        // spot would just be stuck with no way to end their turn either, but leaving
+        // the AI stuck here would silently stall the whole game (turn never advances,
+        // and nothing then stops a human from clicking through it as player 2) --
+        // so the AI forfeits the turn instead of hanging it
+        next_turn();
         return;
     }
 

@@ -24,6 +24,10 @@ const translations = {
 			'Confirm before playing a card ? (shows what the field will look like first)',
 		'settings.player1Colour': 'Player 1 Colour',
 		'settings.player2Colour': 'Player 2 Colour',
+		'settings.cardCounts': 'Change Card Counts',
+		'cardCounts.hint':
+			'How many of each card are in the deck (includes the 2 copies of 1, x, and x² already dealt onto the starting field)',
+		'cardCounts.reset': 'Reset to Default',
 		'tutorial.video': 'Japanese Instructional Video:',
 		'tutorial.pdf': 'English Translation of PDF Instructions:',
 		'credits.builtBy': 'Built by:',
@@ -58,6 +62,10 @@ const translations = {
 			'カードを使う前に確認する？（先に場がどうなるかを表示します）',
 		'settings.player1Colour': 'プレイヤー1の色',
 		'settings.player2Colour': 'プレイヤー2の色',
+		'settings.cardCounts': 'カードの枚数を変更',
+		'cardCounts.hint':
+			'各カードの枚数（開始時に場へ配られる 1・x・x² の2枚ずつも含む）',
+		'cardCounts.reset': 'デフォルトに戻す',
 		'tutorial.video': '日本語の解説動画：',
 		'tutorial.pdf': '英語版ルール（PDF翻訳）：',
 		'credits.builtBy': '制作：',

@@ -97,6 +97,42 @@
 						<h3 data-i18n="settings.player2Colour">Player 2 Colour</h3>
 						<input id="colour-PLAYER_2" type="color" value="#0000FF" />
 					</label>
+
+					<button class="menu-button" id="button-CARDCOUNTS" data-i18n="settings.cardCounts">
+						Change Card Counts
+					</button>
+				</div>
+				<div id="menu-CARDCOUNTS" class="menu-item" hidden>
+					<h3 data-i18n="cardCounts.hint">
+						How many of each card are in the deck (includes the 2 copies of 1, x, and x²
+						already dealt onto the starting field)
+					</h3>
+					<div class="card-count-grid">
+						<label class="card-count" for="count-ZERO"><span>0</span><input id="count-ZERO" type="number" min="0" value="2" /></label>
+						<label class="card-count" for="count-ONE"><span>1</span><input id="count-ONE" type="number" min="0" value="4" /></label>
+						<label class="card-count" for="count-X"><span>x</span><input id="count-X" type="number" min="0" value="7" /></label>
+						<label class="card-count" for="count-X2"><span>x^2</span><input id="count-X2" type="number" min="0" value="3" /></label>
+						<label class="card-count" for="count-COS"><span>cos(x)</span><input id="count-COS" type="number" min="0" value="4" /></label>
+						<label class="card-count" for="count-SIN"><span>sin(x)</span><input id="count-SIN" type="number" min="0" value="4" /></label>
+						<label class="card-count" for="count-E"><span>e^x</span><input id="count-E" type="number" min="0" value="4" /></label>
+						<label class="card-count" for="count-DIV"><span>÷</span><input id="count-DIV" type="number" min="0" value="5" /></label>
+						<label class="card-count" for="count-MULT"><span>×</span><input id="count-MULT" type="number" min="0" value="5" /></label>
+						<label class="card-count" for="count-SQRT"><span>√</span><input id="count-SQRT" type="number" min="0" value="5" /></label>
+						<label class="card-count" for="count-INVERSE"><span>f⁻¹</span><input id="count-INVERSE" type="number" min="0" value="5" /></label>
+						<label class="card-count" for="count-LOG"><span>log</span><input id="count-LOG" type="number" min="0" value="5" /></label>
+						<label class="card-count" for="count-DERIVATIVE"><span>d/dx</span><input id="count-DERIVATIVE" type="number" min="0" value="8" /></label>
+						<label class="card-count" for="count-INTEGRAL"><span>∫</span><input id="count-INTEGRAL" type="number" min="0" value="8" /></label>
+						<label class="card-count" for="count-NABLA"><span>∇</span><input id="count-NABLA" type="number" min="0" value="10" /></label>
+						<label class="card-count" for="count-LAPLACIAN"><span>Δ</span><input id="count-LAPLACIAN" type="number" min="0" value="2" /></label>
+						<label class="card-count" for="count-LIM_POS_INF"><span>lim(x→+∞)</span><input id="count-LIM_POS_INF" type="number" min="0" value="2" /></label>
+						<label class="card-count" for="count-LIM_NEG_INF"><span>lim(x→-∞)</span><input id="count-LIM_NEG_INF" type="number" min="0" value="2" /></label>
+						<label class="card-count" for="count-LIM_0"><span>lim(x→0)</span><input id="count-LIM_0" type="number" min="0" value="2" /></label>
+						<label class="card-count" for="count-LIMINF"><span>liminf</span><input id="count-LIMINF" type="number" min="0" value="1" /></label>
+						<label class="card-count" for="count-LIMSUP"><span>limsup</span><input id="count-LIMSUP" type="number" min="0" value="1" /></label>
+					</div>
+					<button class="menu-button" id="button-RESET_CARD_COUNTS" data-i18n="cardCounts.reset">
+						Reset to Default
+					</button>
 				</div>
 				<div id="menu-TUTORIAL" class="menu-item" hidden>
 					<h3 data-i18n="tutorial.video">Japanese Instructional Video:</h3>

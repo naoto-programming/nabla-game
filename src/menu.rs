@@ -6,6 +6,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{Document, Element, HtmlInputElement, HtmlSelectElement};
 // outer crate imports
 use crate::game::ai::{AiDifficulty, AI_DIFFICULTY};
+use crate::game::card_counts::{reset_card_counts, set_card_count, CARD_COUNT_NAMES, DEFAULT_CARD_COUNTS};
 use crate::game::flags::*;
 use crate::game::structs::{Game, GameState};
 use crate::render::katex::clear_katex_element;
@@ -178,6 +179,13 @@ pub struct SettingsMenu {
 
     ai_difficulty: Element,
     ai_difficulty_listener: EventListener,
+
+    card_counts_button: Element,
+    card_counts_button_listener: EventListener,
+    card_counts: Vec<Element>,
+    card_count_listeners: HashMap<String, EventListener>,
+    reset_card_counts_button: Element,
+    reset_card_counts_listener: EventListener,
 }
 
 impl SettingsMenu {
@@ -264,6 +272,56 @@ impl SettingsMenu {
             }
         });
 
+        // opens the card-count panel from within Settings (it lives alongside the
+        // other top-level menu items so Menu::activate can show/hide it the same way)
+        let card_counts_button = document.get_element_by_id("button-CARDCOUNTS").unwrap();
+        let card_counts_button_listener =
+            EventListener::new(&card_counts_button, "click", |_e| {
+                let menu_ref = unsafe { MENU.as_ref() };
+                if let Some(menu) = menu_ref {
+                    menu.activate("CARDCOUNTS".to_string());
+                }
+            });
+
+        let card_counts: Vec<Element> = CARD_COUNT_NAMES
+            .iter()
+            .map(|name| {
+                document
+                    .get_element_by_id(format!("count-{}", name).as_str())
+                    .unwrap()
+            })
+            .collect();
+
+        let mut card_count_listeners: HashMap<String, EventListener> = HashMap::new();
+        for element in card_counts.iter() {
+            let listener = EventListener::new(element, "change", |e| {
+                let event_target = e.target().unwrap();
+                let input = event_target.dyn_ref::<HtmlInputElement>().unwrap();
+
+                // split id from 'count-NAME'
+                let target_id = input.id();
+                let count_name = target_id.split_once("-").unwrap().1.to_string();
+                let value: u32 = input.value().parse().unwrap_or(0);
+                set_card_count(count_name.as_str(), value);
+            });
+            card_count_listeners.insert(element.id(), listener);
+        }
+
+        let reset_card_counts_button = document
+            .get_element_by_id("button-RESET_CARD_COUNTS")
+            .unwrap();
+        let reset_inputs = card_counts.clone();
+        let reset_card_counts_listener =
+            EventListener::new(&reset_card_counts_button, "click", move |_e| {
+                reset_card_counts();
+                for (element, default) in reset_inputs.iter().zip(DEFAULT_CARD_COUNTS.iter()) {
+                    element
+                        .dyn_ref::<HtmlInputElement>()
+                        .unwrap()
+                        .set_value(default.to_string().as_str());
+                }
+            });
+
         Self {
             checkboxes,
             checkbox_listeners,
@@ -271,6 +329,12 @@ impl SettingsMenu {
             colour_listeners,
             ai_difficulty,
             ai_difficulty_listener,
+            card_counts_button,
+            card_counts_button_listener,
+            card_counts,
+            card_count_listeners,
+            reset_card_counts_button,
+            reset_card_counts_listener,
         }
     }
 }

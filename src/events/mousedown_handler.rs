@@ -30,6 +30,16 @@ pub fn handle_mousedown(str_id: String) {
         render::draw(); // reflect the toggle even if the tap otherwise triggers no game action
     }
 
+    // in a PLAYAI game, the AI's turn belongs to the AI alone -- without this, a click
+    // on the canvas during the AI's turn is dispatched exactly like a real player 2
+    // move (turn phase routing only looks at whose turn number it is, not who is
+    // actually meant to be playing it), letting a human take over mid-game
+    if matches!(game.state, GameState::PLAYAI)
+        && game.get_current_player_num() == crate::game::ai::AI_PLAYER_NUM
+    {
+        return;
+    }
+
     match turn {
         Turn { number: n, .. } if n % 2 == 0 => {
             // even-number turn, player 1

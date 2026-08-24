@@ -175,3 +175,31 @@ label.setting-menu > input[type='checkbox']:checked + span.checkbox::after {
 label.setting-menu > input[type='checkbox']:not(:checked) + span.checkbox::after {
 	content: '';
 }
+
+#menu-CARDCOUNTS {
+	overflow-y: auto;
+	max-height: 80vh;
+}
+.card-count-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+	gap: 0.75em 1.5em;
+	margin: 1em 0;
+}
+label.card-count {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 0.5em;
+}
+label.card-count > input[type='number'] {
+	width: 3.5rem;
+	background-color: var(--color-light);
+	color: var(--color-dark);
+	border-width: 3px;
+	border-style: solid;
+	border-color: var(--color-dark);
+	border-radius: 5px;
+	font-size: 1rem;
+	padding: 0.25rem;
+}
