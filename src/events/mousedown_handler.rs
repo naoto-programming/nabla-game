@@ -440,5 +440,7 @@ pub fn next_turn() {
     } else if field.clone().skip(3).all(|f| f.basis.is_none()) {
         // player 2 wins
         game.game_over(2);
+    } else {
+        crate::game::ai::maybe_take_ai_turn();
     }
 }

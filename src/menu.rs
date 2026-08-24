@@ -3,8 +3,9 @@ use std::collections::HashMap;
 // wasm-bindgen imports
 use gloo::events::EventListener;
 use wasm_bindgen::JsCast;
-use web_sys::{Document, Element, HtmlInputElement};
+use web_sys::{Document, Element, HtmlInputElement, HtmlSelectElement};
 // outer crate imports
+use crate::game::ai::{AiDifficulty, AI_DIFFICULTY};
 use crate::game::flags::*;
 use crate::game::structs::{Game, GameState};
 use crate::render::katex::clear_katex_element;
@@ -174,6 +175,9 @@ pub struct SettingsMenu {
 
     colours: Vec<Element>,
     colour_listeners: HashMap<String, EventListener>,
+
+    ai_difficulty: Element,
+    ai_difficulty_listener: EventListener,
 }
 
 impl SettingsMenu {
@@ -249,11 +253,24 @@ impl SettingsMenu {
             colour_listeners.insert(player_target.id(), listener);
         }
 
+        let ai_difficulty = document
+            .get_element_by_id("select-AI_DIFFICULTY")
+            .unwrap();
+        let ai_difficulty_listener = EventListener::new(&ai_difficulty, "change", |e| {
+            let event_target = e.target().unwrap();
+            let value = event_target.dyn_ref::<HtmlSelectElement>().unwrap().value();
+            unsafe {
+                AI_DIFFICULTY = AiDifficulty::from(value.as_str());
+            }
+        });
+
         Self {
             checkboxes,
             checkbox_listeners,
             colours,
             colour_listeners,
+            ai_difficulty,
+            ai_difficulty_listener,
         }
     }
 }

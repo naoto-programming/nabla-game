@@ -136,6 +136,17 @@ label.setting-menu > input[type='checkbox'] {
 	height: 1.5rem;
 	width: 1.5rem;
 }
+label.setting-menu > select {
+	margin: auto 0;
+	background-color: var(--color-light);
+	color: var(--color-dark);
+	border-width: 3px;
+	border-style: solid;
+	border-color: var(--color-dark);
+	border-radius: 5px;
+	font-size: 1rem;
+	padding: 0.25rem;
+}
 label.setting-menu > input[type='checkbox'] + span.checkbox {
 	margin: auto 0;
 	height: 1.5rem;

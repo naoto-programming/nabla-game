@@ -29,12 +29,20 @@
 			<div class="button-wrapper">
 				<div id="menu-MENU" class="menu-item">
 					<button class="menu-button" id="button-PLAYVS" data-i18n="menu.playvs">Play vs Friend</button>
-					<button class="menu-button" id="button-PLAYAI" disabled data-i18n="menu.playai">Play vs AI</button>
+					<button class="menu-button" id="button-PLAYAI" data-i18n="menu.playai">Play vs AI</button>
 					<button class="menu-button" id="button-TUTORIAL" data-i18n="menu.tutorial">Instructions</button>
 					<button class="menu-button" id="button-SETTINGS" data-i18n="menu.settings">Settings</button>
 					<button class="menu-button" id="button-CREDITS" data-i18n="menu.credits">Credits</button>
 				</div>
 				<div id="menu-SETTINGS" class="menu-item" hidden>
+					<label class="setting-menu" for="select-AI_DIFFICULTY">
+						<h3 data-i18n="settings.aiDifficulty">AI Difficulty</h3>
+						<select id="select-AI_DIFFICULTY">
+							<option value="EASY" data-i18n="settings.aiEasy">Easy</option>
+							<option value="MEDIUM" selected data-i18n="settings.aiMedium">Medium</option>
+							<option value="HARD" data-i18n="settings.aiHard">Hard</option>
+						</select>
+					</label>
 					<label class="setting-menu" for="checkbox-DISPLAY_LN_FOR_LOG">
 						<h3 data-i18n="settings.displayLn">Display Ln instead of Log ?</h3>
 						<input id="checkbox-DISPLAY_LN_FOR_LOG" type="checkbox" />
