@@ -99,7 +99,10 @@ fn basis_size(basis: &Basis) -> u32 {
 /// scores replacing `field[target]` with `new_basis`: rewards clearing/simplifying an
 /// opponent slot (progress toward winning), penalises clearing the AI's own slot
 fn score_replacement(target: usize, new_basis: &Basis, field: &Field) -> f64 {
-    let is_opponent_side = target < 3; // AI is player 2; player 1 owns slots 0-2
+    // slots 0-2 render in player 2's colour and losing them empty is what makes
+    // player 2 lose (see next_turn's win check) -- ie. 0-2 is the AI's OWN side,
+    // and 3-5 (rendered in player 1's colour) is the human opponent's side
+    let is_opponent_side = target >= 3;
     let old_size = field[target].basis.as_ref().map(basis_size).unwrap_or(0);
     let new_size = if new_basis.is_num(0) {
         0
