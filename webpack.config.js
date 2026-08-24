@@ -42,7 +42,7 @@ module.exports = {
 			forceMode: argv.mode,
 			// --no-opt: the wasm-opt binary bundled with current wasm-pack releases
 			// fails to process wasm output from current rustc/wasm-bindgen versions
-			extraArgs: '--typescript --target browser --mode normal --no-opt',
+			extraArgs: '--no-opt',
 		}),
 	],
 };
