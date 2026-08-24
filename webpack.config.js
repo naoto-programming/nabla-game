@@ -15,7 +15,7 @@ module.exports = {
 		rules: [
 			{
 				test: /\.wasm$/,
-				type: 'webassembly/sync',
+				type: 'webassembly/async',
 			},
 		],
 	},
@@ -26,7 +26,11 @@ module.exports = {
 			warning.message.startsWith('asset size limit:'), // build size warning
 	],
 	experiments: {
-		syncWebAssembly: true,
+		// async, not sync: webpack's sync wasm parser (@webassemblyjs) can't parse wasm
+		// output from current rustc ("parseVec could not cast the value"); async mode
+		// just fetches/instantiates the .wasm file via the browser's native WebAssembly
+		// APIs at runtime instead of parsing its bytecode into webpack's module graph
+		asyncWebAssembly: true,
 	},
 	devServer: {
 		static: {
