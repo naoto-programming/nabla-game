@@ -50,7 +50,9 @@ jobs:
           node-version: 20
           cache: yarn
 
-      - run: wasm-pack build --release --target bundler --verbose
+      - run: cargo build --lib --release --target wasm32-unknown-unknown
+      - run: wasm-bindgen target/wasm32-unknown-unknown/release/nabla_game.wasm --out-dir pkg --out-name index --target bundler
+      - run: ls -la pkg
 
       - run: yarn install --frozen-lockfile
       - run: yarn build
