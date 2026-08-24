@@ -190,6 +190,13 @@ fn generate_candidates() -> Vec<AiMove> {
                             field[b].basis.as_ref().unwrap().clone(),
                         ];
                         let result = apply_multi_card(card, bases);
+                        // both operand slots get cleared first; the result (if
+                        // non-zero) then goes back into `a` -- `b` is always lost, so
+                        // it must be scored too, or the AI can't see that it's
+                        // sacrificing (say) its own slot to simplify an opponent's
+                        let score = score_replacement(a, &result, field)
+                            + score_replacement(b, &Basis::from(0), field)
+                            - 1.0; // drop the double-counted baseline from scoring twice
                         moves.push(AiMove {
                             clicks: vec![
                                 hand_id,
@@ -197,7 +204,7 @@ fn generate_candidates() -> Vec<AiMove> {
                                 RenderId::from(format!("f={}", b)),
                                 RenderId::Multidone,
                             ],
-                            score: score_replacement(a, &result, field),
+                            score,
                         });
                     }
                 }
