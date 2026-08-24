@@ -1,0 +1,99 @@
+const translations = {
+	en: {
+		'tab.title': 'Nabla Game',
+		'menu.main': 'Main Menu',
+		'menu.title': 'N𝚫BL𝚫 OPER𝚫TOR G𝚫ME',
+		'menu.playvs': 'Play vs Friend',
+		'menu.playai': 'Play vs AI',
+		'menu.tutorial': 'Instructions',
+		'menu.settings': 'Settings',
+		'menu.credits': 'Credits',
+		'settings.displayLn': 'Display Ln instead of Log ?',
+		'settings.linearDependence':
+			'Allow linearly dependent field bases ? (ie. bases that are scalar multiples of each other, like x and 2x)',
+		'settings.limitsBeyondBounds':
+			"Allow limits outside a function's domain ? (ie. arccos/arcsin are only defined for inputs in [-1, 1], so arccos(∞) is normally invalid)",
+		'settings.fullCompute': 'Perform all computations ?',
+		'settings.fractionalExponents': 'Display roots as x^(1/2) instead of √x',
+		'settings.limitFieldBasis': 'Only allow max 3 field basis ?',
+		'settings.player1Colour': 'Player 1 Colour',
+		'settings.player2Colour': 'Player 2 Colour',
+		'tutorial.video': 'Japanese Instructional Video:',
+		'tutorial.pdf': 'English Translation of PDF Instructions:',
+		'credits.builtBy': 'Built by:',
+		'credits.githubLink': 'Github Link:',
+		'credits.inspiredBy': 'Inspired by:',
+		'gameover.title': 'Game Over',
+		'gameover.restart': 'Restart?',
+		'lang.toggle': '日本語',
+	},
+	ja: {
+		'tab.title': 'ナブラ演算子ゲーム',
+		'menu.main': 'メインメニュー',
+		'menu.title': 'ナブラ演算子ゲーム',
+		'menu.playvs': 'フレンド対戦',
+		'menu.playai': 'AI対戦',
+		'menu.tutorial': '遊び方',
+		'menu.settings': '設定',
+		'menu.credits': 'クレジット',
+		'settings.displayLn': 'log の代わりに ln を表示する？',
+		'settings.linearDependence':
+			'線型従属な基底をフィールドに置けるようにする？（例：x と 2x のように、互いに定数倍の関係にある基底）',
+		'settings.limitsBeyondBounds':
+			'定義域外の極限を許可する？（例：arccos・arcsin の定義域は [-1, 1] のみのため、通常 arccos(∞) は無効）',
+		'settings.fullCompute': 'すべての計算を実行する？',
+		'settings.fractionalExponents': '√x の代わりに x^(1/2) の形で累乗根を表示する',
+		'settings.limitFieldBasis': 'フィールドの基底を最大3つまでに制限する？',
+		'settings.player1Colour': 'プレイヤー1の色',
+		'settings.player2Colour': 'プレイヤー2の色',
+		'tutorial.video': '日本語の解説動画：',
+		'tutorial.pdf': '英語版ルール（PDF翻訳）：',
+		'credits.builtBy': '制作：',
+		'credits.githubLink': 'GitHubリンク：',
+		'credits.inspiredBy': '原作：',
+		'gameover.title': 'ゲーム終了',
+		'gameover.restart': 'もう一度プレイ？',
+		'lang.toggle': 'EN',
+	},
+};
+
+const STORAGE_KEY = 'nabla-lang';
+
+const getInitialLang = () => {
+	try {
+		const saved = localStorage.getItem(STORAGE_KEY);
+		if (saved === 'en' || saved === 'ja') return saved;
+	} catch (e) {}
+	return navigator.language && navigator.language.startsWith('ja') ? 'ja' : 'en';
+};
+
+let currentLang = getInitialLang();
+
+const applyLang = lang => {
+	currentLang = lang;
+	document.documentElement.lang = lang;
+	document.title = translations[lang]['tab.title'];
+
+	document.querySelectorAll('[data-i18n]').forEach(element => {
+		const key = element.getAttribute('data-i18n');
+		const value = translations[lang][key];
+		if (value !== undefined) element.textContent = value;
+	});
+
+	const langButton = document.getElementById('button-LANG');
+	if (langButton) langButton.textContent = translations[lang]['lang.toggle'];
+
+	try {
+		localStorage.setItem(STORAGE_KEY, lang);
+	} catch (e) {}
+};
+
+// wires up the language toggle button and applies the saved/detected language on load
+export const initI18n = () => {
+	applyLang(currentLang);
+
+	const langButton = document.getElementById('button-LANG');
+	if (langButton) {
+		langButton.addEventListener('click', () => applyLang(currentLang === 'en' ? 'ja' : 'en'));
+	}
+};

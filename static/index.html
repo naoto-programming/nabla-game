@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="UTF-8" />
+		<title>Nabla Game</title>
+		<link rel="stylesheet" href="index.css" />
+		<link rel="icon" href="favicon.png" />
+		<!-- Add KaTeX css -->
+		<link
+			rel="stylesheet"
+			href="https://cdn.jsdelivr.net/npm/katex@0.15.2/dist/katex.min.css"
+			integrity="sha384-MlJdn/WNKDGXveldHDdyRP1R4CTHr3FeuDNfhsLPYrq2t0UBkUdK2jyTnXPEK1NQ"
+			crossorigin="anonymous"
+		/>
+		<!-- Add Roboto Slab -->
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Roboto+Slab:wght@500&display=swap"
+			rel="stylesheet"
+		/>
+	</head>
+	<body>
+		<image id="spritesheet" src="./spritesheet.png" alt="spritesheet" hidden />
+		<button class="menu-button" id="button-MENU" data-i18n="menu.main">Main Menu</button>
+		<button class="menu-button lang-button" id="button-LANG">日本語</button>
+		<div id="menu">
+			<h1 class="title" data-i18n="menu.title">N𝚫BL𝚫 OPER𝚫TOR G𝚫ME</h1>
+			<div class="button-wrapper">
+				<div id="menu-MENU" class="menu-item">
+					<button class="menu-button" id="button-PLAYVS" data-i18n="menu.playvs">Play vs Friend</button>
+					<button class="menu-button" id="button-PLAYAI" disabled data-i18n="menu.playai">Play vs AI</button>
+					<button class="menu-button" id="button-TUTORIAL" data-i18n="menu.tutorial">Instructions</button>
+					<button class="menu-button" id="button-SETTINGS" data-i18n="menu.settings">Settings</button>
+					<button class="menu-button" id="button-CREDITS" data-i18n="menu.credits">Credits</button>
+				</div>
+				<div id="menu-SETTINGS" class="menu-item" hidden>
+					<label class="setting-menu" for="checkbox-DISPLAY_LN_FOR_LOG">
+						<h3 data-i18n="settings.displayLn">Display Ln instead of Log ?</h3>
+						<input id="checkbox-DISPLAY_LN_FOR_LOG" type="checkbox" />
+						<span class="checkbox"></span>
+					</label>
+					<label class="setting-menu" for="checkbox-ALLOW_LINEAR_DEPENDENCE">
+						<h3 data-i18n="settings.linearDependence">
+							Allow linearly dependent field bases ? (ie. bases that are scalar multiples of
+							each other, like x and 2x)
+						</h3>
+						<input id="checkbox-ALLOW_LINEAR_DEPENDENCE" type="checkbox" checked />
+						<span class="checkbox"></span>
+					</label>
+					<label class="setting-menu" for="checkbox-ALLOW_LIMITS_BEYOND_BOUNDS">
+						<h3 data-i18n="settings.limitsBeyondBounds">
+							Allow limits outside a function's domain ? (ie. arccos/arcsin are only defined
+							for inputs in [-1, 1], so arccos(∞) is normally invalid)
+						</h3>
+						<input id="checkbox-ALLOW_LIMITS_BEYOND_BOUNDS" type="checkbox" checked />
+						<span class="checkbox"></span>
+					</label>
+					<label class="setting-menu" for="checkbox-FULL_COMPUTE">
+						<h3 data-i18n="settings.fullCompute">Perform all computations ?</h3>
+						<input id="checkbox-FULL_COMPUTE" type="checkbox" />
+						<span class="checkbox"></span>
+					</label>
+					<label class="setting-menu" for="checkbox-USE_FRACTIONAL_EXPONENTS">
+						<h3 data-i18n="settings.fractionalExponents">
+							Display roots as x^(1/2) instead of √x
+						</h3>
+						<input id="checkbox-USE_FRACTIONAL_EXPONENTS" type="checkbox" checked />
+						<span class="checkbox"></span>
+					</label>
+					<label class="setting-menu" for="checkbox-LIMIT_FIELD_BASIS">
+						<h3 data-i18n="settings.limitFieldBasis">Only allow max 3 field basis ?</h3>
+						<input id="checkbox-LIMIT_FIELD_BASIS" type="checkbox" checked />
+						<span class="checkbox"></span>
+					</label>
+
+					<label class="setting-menu" for="colour-PLAYER_1">
+						<h3 data-i18n="settings.player1Colour">Player 1 Colour</h3>
+						<input id="colour-PLAYER_1" type="color" value="#FF0000" />
+					</label>
+					<label class="setting-menu" for="colour-PLAYER_2">
+						<h3 data-i18n="settings.player2Colour">Player 2 Colour</h3>
+						<input id="colour-PLAYER_2" type="color" value="#0000FF" />
+					</label>
+				</div>
+				<div id="menu-TUTORIAL" class="menu-item" hidden>
+					<h3 data-i18n="tutorial.video">Japanese Instructional Video:</h3>
+					<iframe
+						width="560"
+						height="315"
+						src="https://www.youtube.com/embed/kf0DAygsXAU"
+						title="YouTube video player"
+						frameborder="0"
+						allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+						allowfullscreen
+					></iframe>
+					<a href="https://trans-nabla--itter2voxrtiyag.repl.co/">
+						<h3 data-i18n="tutorial.pdf">English Translation of PDF Instructions:</h3>
+					</a>
+				</div>
+				<div id="menu-CREDITS" class="menu-item" hidden>
+					<p>
+						<span data-i18n="credits.builtBy">Built by:</span>
+						<a href="https://github.com/inferrinizzard">inferrinizzard</a>
+					</p>
+					<p>
+						<span data-i18n="credits.githubLink">Github Link:</span>
+						<a href="https://github.com/inferrinizzard/nabla-game"
+							>https://github.com/inferrinizzard/nabla-game</a
+						>
+					</p>
+					<p>
+						<span data-i18n="credits.inspiredBy">Inspired by:</span>
+						<a href="https://nablagame.com/">ナブラ演算子ゲーム</a>
+					</p>
+				</div>
+				<div id="menu-GAMEOVER" hidden>
+					<h1 data-i18n="gameover.title">Game Over</h1>
+					<h2 id="gameover-WINNER">Player</h2>
+					<button id="gameover-RESTART" data-i18n="gameover.restart">Restart?</button>
+				</div>
+			</div>
+		</div>
+		<div id="katex"></div>
+		<canvas id="canvas"></canvas>
+		<canvas id="hitCanvas" hidden></canvas>
+		<script src="index.js"></script>
+	</body>
+</html>
