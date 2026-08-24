@@ -19,8 +19,6 @@ crate-type = ["cdylib", "rlib"]
 lto = true
 
 [package.metadata.wasm-pack.profile.release]
-# the wasm-opt binary bundled with wasm-pack can't parse wasm output from
-# current rustc versions ("invalid code after misc prefix"), so skip it
 wasm-opt = false
 
 [features]
