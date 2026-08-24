@@ -35,10 +35,14 @@ jobs:
       # fails (schema mismatch) when it has to pick the version itself
       - run: cargo install wasm-bindgen-cli --version 0.2.100 --locked
 
-      # the wasm-opt binary wasm-pack bundles/downloads itself is too old to
-      # parse wasm output from current rustc ("invalid code after misc
-      # prefix"); install a current one on PATH instead
-      - run: sudo apt-get update && sudo apt-get install -y binaryen
+      # the wasm-opt binary wasm-pack bundles/downloads itself (and apt's
+      # binaryen package) are too old to parse wasm output from current
+      # rustc ("invalid code after misc prefix"); install a current release
+      # from upstream and put it on PATH, since wasm-pack prefers a wasm-opt
+      # it finds on PATH over downloading its own
+      - run: |
+          curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz | tar xz
+          echo "$PWD/binaryen-version_132/bin" >> "$GITHUB_PATH"
       - run: wasm-opt --version
 
       - uses: actions/setup-node@v4
