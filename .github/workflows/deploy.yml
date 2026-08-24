@@ -35,6 +35,12 @@ jobs:
       # fails (schema mismatch) when it has to pick the version itself
       - run: cargo install wasm-bindgen-cli --version 0.2.100 --locked
 
+      # the wasm-opt binary wasm-pack bundles/downloads itself is too old to
+      # parse wasm output from current rustc ("invalid code after misc
+      # prefix"); install a current one on PATH instead
+      - run: sudo apt-get update && sudo apt-get install -y binaryen
+      - run: wasm-opt --version
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20

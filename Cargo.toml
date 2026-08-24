@@ -18,9 +18,6 @@ crate-type = ["cdylib", "rlib"]
 # so it's only enabled in release mode.
 lto = true
 
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = false
-
 [features]
 # If you uncomment this line, it will enable `wee_alloc`:
 #default = ["wee_alloc"]
