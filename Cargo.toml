@@ -18,6 +18,11 @@ crate-type = ["cdylib", "rlib"]
 # so it's only enabled in release mode.
 lto = true
 
+[package.metadata.wasm-pack.profile.release]
+# the wasm-opt binary bundled with wasm-pack can't parse wasm output from
+# current rustc versions ("invalid code after misc prefix"), so skip it
+wasm-opt = false
+
 [features]
 # If you uncomment this line, it will enable `wee_alloc`:
 #default = ["wee_alloc"]
