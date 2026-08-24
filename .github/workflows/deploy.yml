@@ -33,7 +33,7 @@ jobs:
       # installed up front, pinned to the exact version wasm-bindgen resolves to in
       # Cargo.lock, since wasm-pack's own auto-install of a matching wasm-bindgen-cli
       # fails (schema mismatch) when it has to pick the version itself
-      - run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
+      - run: cargo install wasm-bindgen-cli --version 0.2.100 --locked
 
       - uses: actions/setup-node@v4
         with:
