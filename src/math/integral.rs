@@ -7,11 +7,18 @@ use crate::game::flags::FULL_COMPUTE;
 use super::derivative::derivative;
 use super::fraction::Fraction;
 use super::liate;
+use super::util::ComputeDepthGuard;
 
 use crate::util::js_log;
 
 /// finds integral of given Basis if possible, returns IntBasisNode if not
 pub fn integral(basis: &Basis) -> Basis {
+    // bail out on pathologically deep expressions rather than overflowing the stack
+    let _depth_guard = match ComputeDepthGuard::enter() {
+        Some(guard) => guard,
+        None => return basis.clone(),
+    };
+
     match basis {
         Basis::BasisLeaf(basis_leaf) => match basis_leaf.element {
             BasisElement::Num => Basis::x() * basis_leaf.coefficient,

@@ -2,6 +2,7 @@
 use crate::basis::{builders::*, structs::*};
 // local imports
 use super::fraction::Fraction;
+use super::util::ComputeDepthGuard;
 
 /// find inverse of given operator if possible
 fn operator_inverse(operator: BasisOperator) -> Option<BasisOperator> {
@@ -20,6 +21,12 @@ fn operator_inverse(operator: BasisOperator) -> Option<BasisOperator> {
 /// finds inverse of Basis if possible, returns InvBasisNode if not
 /// uses stack-based recursion to invert operator order
 pub fn inverse(basis: &Basis) -> Basis {
+    // bail out on pathologically deep expressions rather than overflowing the stack
+    let _depth_guard = match ComputeDepthGuard::enter() {
+        Some(guard) => guard,
+        None => return basis.clone(),
+    };
+
     if let Basis::BasisLeaf(basis_leaf) = basis {
         if basis_leaf.element == BasisElement::X {
             return basis.clone() / basis.coefficient();

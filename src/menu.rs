@@ -186,6 +186,7 @@ impl SettingsMenu {
             "FULL_COMPUTE",
             "USE_FRACTIONAL_EXPONENTS",
             "LIMIT_FIELD_BASIS",
+            "CONFIRM_BEFORE_PLAY",
         ]
         .iter()
         .map(|state| {
@@ -214,6 +215,7 @@ impl SettingsMenu {
                         "FULL_COMPUTE" => FULL_COMPUTE = flag_value,
                         "USE_FRACTIONAL_EXPONENTS" => USE_FRACTIONAL_EXPONENTS = flag_value,
                         "LIMIT_FIELD_BASIS" => LIMIT_FIELD_BASIS = flag_value,
+                        "CONFIRM_BEFORE_PLAY" => CONFIRM_BEFORE_PLAY = flag_value,
                         _ => panic!("Unknown flag name: {}", flag_name),
                     }
                 }

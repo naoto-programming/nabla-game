@@ -8,7 +8,7 @@ use crate::basis::structs::*;
 use super::cards::*;
 
 /// Controller for Game Field
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Field {
     pub basis: [FieldBasis; 6], // [0-2] for player_1, [3-5] for player_2
     pub inverses: HashMap<Basis, Basis>,
@@ -90,7 +90,7 @@ impl IndexMut<usize> for Field {
 }
 
 /// individual Basis of Field
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FieldBasis {
     pub basis: Option<Basis>,
     pub index: i32,

@@ -1,5 +1,5 @@
 // std imports
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 // wasm-bindgen imports
 use gloo::events::EventListener;
 use gloo::render::request_animation_frame;
@@ -35,6 +35,8 @@ pub struct Canvas {
     pub anim_controller: AnimController,
     // pub render_animation_frame_handle: AnimationFrame,
     // pub anim_items: HashMap<RenderId, AnimItem>,
+    /// field cards tapped open to reveal their full (otherwise clipped) expression
+    pub expanded_cards: HashSet<RenderId>,
 }
 
 impl Canvas {
@@ -105,6 +107,7 @@ impl Canvas {
                 anim_chain: HashMap::default(),
                 render_animation_frame_handle: request_animation_frame(on_animation_frame),
             },
+            expanded_cards: HashSet::default(),
         }
     }
 

@@ -39,14 +39,23 @@ pub fn clear_katex_element(id: String) -> Element {
 }
 
 /// renders KaTeX item at pos with given size & id
-pub fn draw_katex<T>(item: &T, id: String, size: &str, pos: Vector2) -> Element
+/// `clip`, if given as (width, height), constrains the element to that box and hides any
+/// overflow (used to stop long field expressions from spilling over neighbouring cards);
+/// pass `None` for unconstrained rendering (eg. an expanded/tapped card, or the graveyard)
+pub fn draw_katex<T>(item: &T, id: String, size: &str, pos: Vector2, clip: Option<(f64, f64)>) -> Element
 where
     T: ToLatex,
     T: Clone,
     T: std::fmt::Debug,
 {
     let element = render_katex_element(item.clone(), id, size);
-    let style_string = format!("position: absolute; top: {}px; left: {}px;", pos.y, pos.x);
+    let style_string = match clip {
+        Some((width, height)) => format!(
+            "position: absolute; top: {}px; left: {}px; width: {}px; height: {}px; overflow: hidden;",
+            pos.y, pos.x, width, height
+        ),
+        None => format!("position: absolute; top: {}px; left: {}px;", pos.y, pos.x),
+    };
     element
         .set_attribute("style", style_string.as_str())
         .expect(format!("Cannot set style for {:?}", item).as_str());

@@ -16,6 +16,8 @@ const translations = {
 		'settings.fullCompute': 'Perform all computations ?',
 		'settings.fractionalExponents': 'Display roots as x^(1/2) instead of √x',
 		'settings.limitFieldBasis': 'Only allow max 3 field basis ?',
+		'settings.confirmBeforePlay':
+			'Confirm before playing a card ? (shows what the field will look like first)',
 		'settings.player1Colour': 'Player 1 Colour',
 		'settings.player2Colour': 'Player 2 Colour',
 		'tutorial.video': 'Japanese Instructional Video:',
@@ -44,6 +46,8 @@ const translations = {
 		'settings.fullCompute': 'すべての計算を実行する？',
 		'settings.fractionalExponents': '√x の代わりに x^(1/2) の形で累乗根を表示する',
 		'settings.limitFieldBasis': 'フィールドの基底を最大3つまでに制限する？',
+		'settings.confirmBeforePlay':
+			'カードを使う前に確認する？（先に場がどうなるかを表示します）',
 		'settings.player1Colour': 'プレイヤー1の色',
 		'settings.player2Colour': 'プレイヤー2の色',
 		'tutorial.video': '日本語の解説動画：',

@@ -51,6 +51,7 @@ fn render_item(id: RenderId) {
         RenderId::TurnIndicator => draw_button(id, "Your Turn"),
         RenderId::Cancel => draw_button(id, "Cancel"),
         RenderId::Multidone => draw_button(id, "Finish"),
+        RenderId::Confirm => draw_button(id, "Use it"),
         _ if id.is_graveyard() => draw_graveyard(id),
         _ if id.is_field() => draw_field(id),
         _ if id.is_player() => draw_hand(id),
@@ -112,6 +113,9 @@ fn draw_button(id: RenderId, text: &str) {
     if id == RenderId::Multidone && !matches!(game.turn.phase, TurnPhase::MULTISELECT(_)) {
         return;
     }
+    if id == RenderId::Confirm && !matches!(game.turn.phase, TurnPhase::CONFIRM) {
+        return;
+    }
     let button = &canvas.render_items[&id];
 
     let gutter = button.w / 4.0;
@@ -119,8 +123,8 @@ fn draw_button(id: RenderId, text: &str) {
         canvas.canvas_bounds.y - gutter * 2.0 - button.h * 2.0 // buttom of canvas for p1
     } else {
         gutter // top of canvas for p2
-    } + if id == RenderId::Multidone {
-        button.h + gutter // bottom half of card for multidone
+    } + if id == RenderId::Multidone || id == RenderId::Confirm {
+        button.h + gutter // bottom half of card for multidone/confirm
     } else {
         0.0
     };
@@ -228,6 +232,7 @@ fn draw_graveyard(_id: RenderId) {
                 x: card_pos.x + card_size.x / 2.0,
                 y: card_pos.y + card_size.y / 2.0,
             },
+            None,
         );
     }
 
@@ -261,17 +266,28 @@ fn set_line_dash(context: &CanvasRenderingContext2d, dash_num: u32, dash_size: f
 /// renders 6 field basis slots
 fn draw_field(id: RenderId) {
     let (canvas, game) = unsafe { (CANVAS.as_ref().unwrap(), GAME.as_mut().unwrap()) };
-    let field = &game.field;
     let context = &canvas.context;
 
     let card = &canvas.render_items[&id];
     let val = id.key_val().1;
 
-    let card_data = &field[val];
+    // while CONFIRM_BEFORE_PLAY is awaiting a decision, preview the field as it would
+    // look after the move instead of its current (unchanged) state
+    let pending = if matches!(game.turn.phase, TurnPhase::CONFIRM) {
+        game.pending.as_ref()
+    } else {
+        None
+    };
+    let card_data = match pending {
+        Some(pending) => &pending.field[val],
+        None => &game.field[val],
+    };
+    let is_changing = pending.is_some_and(|pending| pending.changed_indices.contains(&val));
+
     if card_data.basis.is_none() {
         set_line_dash(context, 2, 10.0) // set line dash for empty field basis
     }
-    if game.active.selected.contains(&id) {
+    if game.active.selected.contains(&id) || is_changing {
         context.set_line_width(5.0);
     }
     draw_rect(card.x, card.y, card.w, card.h, card.r, id.to_string());
@@ -280,6 +296,13 @@ fn draw_field(id: RenderId) {
 
     let katex_element_id = format!("katex-item_{}", id.to_string());
     if let Some(basis) = &card_data.basis {
+        // clip expressions that overflow the card by default; tapping a card toggles
+        // it into canvas.expanded_cards to reveal the full expression (see mousedown_handler)
+        let clip = if canvas.expanded_cards.contains(&id) {
+            None
+        } else {
+            Some((card.w, card.h))
+        };
         draw_katex(
             basis,
             katex_element_id,
@@ -288,6 +311,7 @@ fn draw_field(id: RenderId) {
                 y: card.y + card.h / 2.0,
                 x: card.x + card.w / 2.0,
             },
+            clip,
         );
     } else {
         clear_katex_element(katex_element_id);

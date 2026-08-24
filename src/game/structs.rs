@@ -70,6 +70,7 @@ pub struct Game {
     pub deck: Vec<Card>,
     pub graveyard: Vec<Card>,
     pub active: ActiveCards,
+    pub pending: Option<PendingAction>, // awaiting confirmation, see CONFIRM_BEFORE_PLAY
 }
 
 impl Game {
@@ -94,6 +95,7 @@ impl Game {
                 selected: Vec::default(),
                 hover: None,
             },
+            pending: None,
         };
     }
 
@@ -160,6 +162,14 @@ pub enum TurnPhase {
     SELECT(Card),       // single-basis operators or playing new operators with a blank slot
     FIELD_SELECT(Card), // nabla or laplacian
     MULTISELECT(Card),  // mult or div
+    CONFIRM,            // previewing the resulting field, see CONFIRM_BEFORE_PLAY
+}
+
+/// a computed move waiting on player confirmation before it replaces `Game::field`
+#[derive(Debug)]
+pub struct PendingAction {
+    pub field: Field,
+    pub changed_indices: Vec<usize>,
 }
 
 /// struct to store currently selected cards

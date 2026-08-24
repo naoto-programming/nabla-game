@@ -136,6 +136,7 @@ pub enum RenderId {
     Graveyard2,
     Cancel,
     Multidone,
+    Confirm,
     TurnIndicator,
 }
 
@@ -187,6 +188,7 @@ impl From<String> for RenderId {
             "g=2" => RenderId::Graveyard2,
             "x=0" => RenderId::Cancel,
             "x=1" => RenderId::Multidone,
+            "x=2" => RenderId::Confirm,
             "t=0" => RenderId::TurnIndicator,
             _ => panic!("Invalid render id: {}", s),
         }
@@ -226,6 +228,7 @@ impl Display for RenderId {
                 RenderId::Graveyard2 => "g=2",
                 RenderId::Cancel => "x=0",
                 RenderId::Multidone => "x=1",
+                RenderId::Confirm => "x=2",
                 RenderId::TurnIndicator => "t=0",
                 // _ => panic!("Invalid render id: {:?}", self),
             }

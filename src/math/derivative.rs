@@ -5,6 +5,12 @@ use super::util::*;
 
 /// finds the derivative of the given Basis
 pub fn derivative(basis: &Basis) -> Basis {
+    // bail out on pathologically deep expressions rather than overflowing the stack
+    let _depth_guard = match ComputeDepthGuard::enter() {
+        Some(guard) => guard,
+        None => return basis.clone(),
+    };
+
     return match basis {
         // is standard basis
         Basis::BasisLeaf(basis_leaf) => match basis_leaf.element {

@@ -182,10 +182,14 @@ pub fn get_base_button_pos(field_pos: &RenderHash, player_pos: &RenderHash) -> R
         r: button_radius,
     };
 
+    // Confirm reuses Multidone's slot: the two are never shown on the same turn phase
+    let confirm_pos = multidone_pos;
+
     HashMap::from([
         (RenderId::Deck, deck_pos),
         (RenderId::Cancel, cancel_pos),
         (RenderId::Multidone, multidone_pos),
+        (RenderId::Confirm, confirm_pos),
         (RenderId::TurnIndicator, turn_indicator_pos),
     ])
 }

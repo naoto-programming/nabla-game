@@ -10,3 +10,5 @@ pub static mut FULL_COMPUTE: bool = false;
 pub static mut USE_FRACTIONAL_EXPONENTS: bool = true;
 /// restrict field to maximum 3 Basis
 pub static mut LIMIT_FIELD_BASIS: bool = true;
+/// preview the resulting field before committing to a move, requiring explicit confirmation
+pub static mut CONFIRM_BEFORE_PLAY: bool = false;

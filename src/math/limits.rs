@@ -20,7 +20,7 @@ fn limit_arccos_arcsin(
         }
         // min(arcsin) = -PI/2
         if operator.is_node(BasisOperator::Sin) {
-            return Some(Basis::from(1));
+            return Some(Basis::from(-1));
         }
     }
 
@@ -187,9 +187,11 @@ pub fn limit(limit_card: &LimitCard) -> impl Fn(&Basis) -> Option<Basis> {
                     BasisOperator::Acos | BasisOperator::Asin => {
                         let flag = unsafe { ALLOW_LIMITS_BEYOND_BOUNDS };
                         if flag {
-                            // find nested limit
-                            let operand_limit = limit(&limit_card)(&Basis::x()).unwrap();
-                            return limit_arccos_arcsin(&limit_card, &operands[0], operand_limit);
+                            // limit of the actual operand (eg. 2x+1 in acos(2x+1)), not bare x
+                            if base_limit.is_none() {
+                                return None;
+                            }
+                            return limit_arccos_arcsin(&limit_card, &operands[0], base_limit.unwrap());
                         } else {
                             match *operator {
                                 // acos(0) = PI/2

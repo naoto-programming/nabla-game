@@ -3,18 +3,32 @@ use std::cmp::min;
 // outer crate imports
 use crate::basis::structs::*;
 use crate::game::cards::*;
-use crate::game::{field::FieldBasis, flags::ALLOW_LINEAR_DEPENDENCE, structs::*};
+use crate::game::{
+    field::{Field, FieldBasis},
+    flags::{ALLOW_LINEAR_DEPENDENCE, CONFIRM_BEFORE_PLAY},
+    structs::*,
+};
 use crate::render::anim;
 use crate::render::render;
 use crate::render::util::RenderId;
 // root imports
-use crate::GAME;
+use crate::{CANVAS, GAME};
 
 /// delegates event handling based on turn num
 pub fn handle_mousedown(str_id: String) {
     let game = unsafe { GAME.as_mut().unwrap() };
     let turn = &game.turn;
     let id = RenderId::from(str_id);
+
+    // tapping a field card with an expression toggles it between clipped and fully
+    // shown, independent of whatever game action the tap also triggers below
+    if id.is_field() && game.field[id.key_val().1].basis.is_some() {
+        let canvas = unsafe { CANVAS.as_mut().unwrap() };
+        if !canvas.expanded_cards.remove(&id) {
+            canvas.expanded_cards.insert(id);
+        }
+        render::draw(); // reflect the toggle even if the tap otherwise triggers no game action
+    }
 
     match turn {
         Turn { number: n, .. } if n % 2 == 0 => {
@@ -41,10 +55,20 @@ pub fn branch_turn_phase(id: RenderId, player_num: u32) {
 
     let (id_key, id_val) = id.key_val();
 
-    // cancel button
+    // cancel button: also discards any move awaiting confirmation
     if id_key == "x" && id_val == 0 {
         game.active.clear();
+        game.pending = None;
         next_phase(TurnPhase::IDLE);
+        return;
+    }
+
+    // confirm button: commits the previewed move
+    if id_key == "x" && id_val == 2 && matches!(turn.phase, TurnPhase::CONFIRM) {
+        if let Some(pending) = game.pending.take() {
+            game.field = pending.field;
+            end_turn();
+        }
         return;
     }
 
@@ -61,6 +85,24 @@ pub fn branch_turn_phase(id: RenderId, player_num: u32) {
             multi_select_phase(multi_operator, id, player_num)
         }
         _ => {} // js_log!("Turn Phase Error: received {} on turn {:?}", id, turn),
+    }
+}
+
+/// either commits `new_field` immediately and ends the turn, or -- when
+/// CONFIRM_BEFORE_PLAY is on -- stores it as a preview and waits for the player to
+/// confirm or cancel via the Confirm/Cancel buttons before it takes effect
+fn commit_or_confirm(new_field: Field, changed_indices: Vec<usize>) {
+    let game = unsafe { GAME.as_mut().unwrap() };
+    let flag = unsafe { CONFIRM_BEFORE_PLAY };
+    if flag {
+        game.pending = Some(PendingAction {
+            field: new_field,
+            changed_indices,
+        });
+        next_phase(TurnPhase::CONFIRM);
+    } else {
+        game.field = new_field;
+        end_turn();
     }
 }
 
@@ -116,33 +158,34 @@ fn select_turn_phase(select_operator: Card, (id_key, id_val): (String, usize)) {
                 && game.field[id_val].basis.is_none()
                 && !matches!(basis_card, BasisCard::Zero)
             {
-                game.field[id_val] = FieldBasis::new(&Basis::from(basis_card));
-                end_turn();
+                let mut new_field = game.field.clone();
+                new_field[id_val] = FieldBasis::new(&Basis::from(basis_card));
+                commit_or_confirm(new_field, vec![id_val]);
             }
         }
         // play function from hand onto field
         operator_card => {
             if id_key == "f" {
+                let mut new_field = game.field.clone();
                 if matches!(
                     operator_card,
                     Card::DerivativeCard(DerivativeCard::Derivative | DerivativeCard::Integral)
                 ) {
-                    handle_derivative_card(operator_card, id_val);
+                    handle_derivative_card(&mut new_field, operator_card, id_val);
                 } else if matches!(operator_card, Card::AlgebraicCard(AlgebraicCard::Inverse)) {
                     let result_basis =
-                        apply_card(&operator_card)(game.field[id_val].basis.as_ref().unwrap());
-                    game.field.inverse(id_val, Some(result_basis))
+                        apply_card(&operator_card)(new_field[id_val].basis.as_ref().unwrap());
+                    new_field.inverse(id_val, Some(result_basis))
                 } else {
-                    let selected_field_basis = &mut game.field[id_val];
                     let result_basis =
-                        apply_card(&operator_card)(selected_field_basis.basis.as_ref().unwrap());
+                        apply_card(&operator_card)(new_field[id_val].basis.as_ref().unwrap());
                     if result_basis.is_num(0) || result_basis.is_inf(1) || result_basis.is_inf(-1) {
-                        game.field[id_val] = FieldBasis::none();
+                        new_field[id_val] = FieldBasis::none();
                     } else {
-                        game.field[id_val] = FieldBasis::new(&result_basis);
+                        new_field[id_val] = FieldBasis::new(&result_basis);
                     }
                 }
-                end_turn();
+                commit_or_confirm(new_field, vec![id_val]);
             }
         }
     }
@@ -150,18 +193,19 @@ fn select_turn_phase(select_operator: Card, (id_key, id_val): (String, usize)) {
 
 /// handles field select turn phase, player can choose side of field to target with selected card
 fn field_select_phase(field_operator: Card, (_id_key, id_val): (String, usize)) {
+    let game = unsafe { GAME.as_mut().unwrap() };
     let card_range = if id_val < 3 { 0..3 } else { 3..6 };
+    let mut new_field = game.field.clone();
+    let changed_indices: Vec<usize> = card_range.clone().collect();
     // for each basis on one half of the field
     for i in card_range {
-        handle_derivative_card(field_operator, i);
+        handle_derivative_card(&mut new_field, field_operator, i);
     }
-    end_turn();
+    commit_or_confirm(new_field, changed_indices);
 }
 
 /// manages derivatives of FieldBasis, looks up history of derivatives/integrals and applies if possible
-fn handle_derivative_card(card: Card, i: usize) {
-    let game = unsafe { GAME.as_mut().unwrap() };
-
+fn handle_derivative_card(field: &mut Field, card: Card, i: usize) {
     let is_laplacian = matches!(card, Card::DerivativeCard(DerivativeCard::Laplacian));
     let is_integral = matches!(card, Card::DerivativeCard(DerivativeCard::Integral));
     let is_derivative = matches!(
@@ -169,7 +213,7 @@ fn handle_derivative_card(card: Card, i: usize) {
         Card::DerivativeCard(DerivativeCard::Derivative | DerivativeCard::Nabla)
     );
 
-    let selected_field_basis = &game.field[i];
+    let selected_field_basis = &field[i];
     if selected_field_basis.basis.is_none() {
         return;
     }
@@ -177,34 +221,34 @@ fn handle_derivative_card(card: Card, i: usize) {
     // shortcut if already in history
     if selected_field_basis.has_value(&card) {
         if is_derivative || is_laplacian {
-            game.field.derivative(i, None);
+            field.derivative(i, None);
         } else if is_integral {
-            game.field.integral(i, None);
+            field.integral(i, None);
         }
         if is_laplacian {
-            game.field.derivative(i, None);
+            field.derivative(i, None);
         }
     } else {
         // calculate derivative/integral
-        let result_basis = apply_card(&card)(selected_field_basis.basis.as_ref().unwrap());
+        let result_basis = apply_card(&card)(field[i].basis.as_ref().unwrap());
         if result_basis.is_num(0) {
-            game.field[i] = FieldBasis::none();
+            field[i] = FieldBasis::none();
             return;
         } else {
             if is_derivative || is_laplacian {
-                game.field.derivative(i, Some(result_basis.clone()));
+                field.derivative(i, Some(result_basis.clone()));
             } else if is_integral {
-                game.field.integral(i, Some(result_basis.clone()));
+                field.integral(i, Some(result_basis.clone()));
             }
         }
         // calculate second derivative if laplacian
         if is_laplacian {
             let second_derivative = apply_card(&card)(&result_basis);
             if second_derivative.is_num(0) {
-                game.field[i] = FieldBasis::none();
+                field[i] = FieldBasis::none();
                 return;
             }
-            game.field.derivative(i, Some(second_derivative));
+            field.derivative(i, Some(second_derivative));
         }
     }
 }
@@ -217,7 +261,7 @@ fn multi_select_phase(multi_operator: Card, id: RenderId, player_num: u32) {
     } else {
         &mut game.player_2
     };
-    let field = &mut game.field;
+    let field = &game.field;
     let selected = &mut game.active.selected;
     let (id_key, id_val) = id.key_val();
 
@@ -281,15 +325,16 @@ fn multi_select_phase(multi_operator: Card, id: RenderId, player_num: u32) {
                 None
             })
             .collect::<Vec<usize>>();
+        let mut new_field = field.clone();
         used_field_bases // clear used field bases
             .iter()
-            .for_each(|field_index| field[*field_index] = FieldBasis::none());
+            .for_each(|field_index| new_field[*field_index] = FieldBasis::none());
         if result_basis.is_num(0) {
-            field[used_field_bases[0]] = FieldBasis::none();
+            new_field[used_field_bases[0]] = FieldBasis::none();
         } else {
-            field[used_field_bases[0]] = FieldBasis::new(&result_basis); // assign result basis to any newly empty field
+            new_field[used_field_bases[0]] = FieldBasis::new(&result_basis); // assign result basis to any newly empty field
         }
-        end_turn();
+        commit_or_confirm(new_field, used_field_bases);
     }
 }
 
