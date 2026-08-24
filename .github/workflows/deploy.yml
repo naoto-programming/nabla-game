@@ -40,7 +40,7 @@ jobs:
           node-version: 20
           cache: yarn
 
-      - run: wasm-pack build --release --target bundler --no-opt --verbose
+      - run: wasm-pack build --release --target bundler --verbose
 
       - run: yarn install --frozen-lockfile
       - run: yarn build
