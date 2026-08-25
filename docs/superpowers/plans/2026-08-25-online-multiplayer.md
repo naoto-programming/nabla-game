@@ -33,7 +33,7 @@
 **Interfaces:**
 - Produces: `card_to_byte(card: &Card) -> u8`, `byte_to_card(byte: u8) -> Option<Card>`, `cards_to_bytes(cards: &[Card]) -> Vec<u8>`, `bytes_to_cards(bytes: &[u8]) -> Option<Vec<Card>>` — all `pub`, used by Task 4.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/card_encoding.rs`:
 
@@ -99,12 +99,12 @@ fn test_cards_to_bytes_and_back() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test --test card_encoding`
 Expected: FAIL to compile — `card_encoding` module does not exist yet.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `src/game/card_encoding.rs`:
 
@@ -191,12 +191,12 @@ pub mod flags;
 pub mod structs;
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test --test card_encoding`
 Expected: PASS (4 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/game/card_encoding.rs src/game/mod.rs tests/card_encoding.rs
@@ -218,7 +218,7 @@ git commit -m "Add Card <-> byte encoding for online match setup"
 - Consumes: `RenderId` (from `crate::render::util`, already `Eq + PartialEq + Debug + Copy + Clone`).
 - Produces: `OnlineSession::new(local_player_num: u32) -> OnlineSession`, `OnlineSession::record_click(&mut self, id: RenderId)`, `OnlineSession::take_outgoing(&mut self) -> Vec<RenderId>`, `pub static mut ONLINE_SESSION: Option<OnlineSession>`. `GameState::PLAYONLINE` variant + `"PLAYONLINE"` string mapping. Used by Tasks 3, 5, 6.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/online.rs`:
 
@@ -261,12 +261,12 @@ fn test_take_outgoing_clears_the_buffer() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test --test online`
 Expected: FAIL to compile — `online` module / `OnlineSession` do not exist yet.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Modify `src/lib.rs` — change line 14 from `mod render;` to:
 
@@ -367,7 +367,7 @@ pub mod online;
 pub mod structs;
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test --test online`
 Expected: PASS (4 tests)
@@ -377,7 +377,7 @@ Also run the full suite to confirm nothing else broke from the `pub mod render` 
 Run: `cargo test --no-fail-fast 2>&1 | grep -E "test result|FAILED"`
 Expected: same pass/fail counts as before this task (one pre-existing unrelated failure, `test_complex_special_coefficients`, is expected and not something this plan touches).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib.rs src/game/structs.rs src/game/online.rs src/game/mod.rs tests/online.rs
@@ -399,7 +399,7 @@ git commit -m "Add OnlineSession state and GameState::PLAYONLINE"
 - Consumes: `OnlineSession` (Task 2).
 - Produces (Rust, `#[wasm_bindgen]`, callable from JS): `on_peer_connected()`, `on_peer_disconnected()`, `on_connection_error()`. Produces (JS, callable from Rust via `extern "C"`): `js_create_room() -> String`, `js_join_room(code: String)`, `js_leave_room()`. Both sides used starting Task 4.
 
-- [ ] **Step 1: Add the dependency**
+- [x] **Step 1: Add the dependency**
 
 ```bash
 yarn add "@trystero-p2p/torrent"
@@ -407,10 +407,29 @@ yarn add "@trystero-p2p/torrent"
 
 This updates `package.json` and `yarn.lock`.
 
-- [ ] **Step 2: Write `js/online.js`**
+- [x] **Step 2: Write `js/online.js`**
+
+**Important — verified during implementation, not before:** the natural-looking design (`js/index.js` imports `online.js` directly and hands it a wasm module reference via a `setWasm()` call, so `online.js`'s Trystero event handlers can call `wasm.on_peer_connected()` etc.) compiles fine but silently never works at runtime. The root cause: `#[wasm_bindgen(module = "/js/online.js")]` in `src/game/online.rs` makes `wasm-bindgen` copy `js/online.js` into `pkg/snippets/<hash>/js/online.js`, and webpack treats that as a *separate module instance* from the one `js/index.js` imports directly — they don't share the top-level `let wasm = null` variable. `setWasm()` populates the instance nobody's `extern "C"` calls ever reach; the instance wasm-bindgen actually calls into always has `wasm === null`, so every `wasm && wasm.on_x()` call silently no-ops forever (connect, disconnect, timeout, everything). This was only caught by testing the deployed build with Playwright and watching the connection hang with no error.
+
+The fix -- and the version below -- avoids the dual-instance problem entirely: instead of receiving a wasm reference from outside, `js/online.js` imports the exported Rust callback functions directly, via the relative path back to wasm-bindgen's own generated glue (`../../../index_bg.js` from the snippet's copied location, `pkg/snippets/<hash>/js/online.js`  -- three directories up is always `pkg/`, regardless of the hash, which changes with content). This is wasm-bindgen's documented snippet-import convention, and since both sides only import plain (hoisted) function declarations, the circular import between `index_bg.js` and the online.js snippet is safe. There is no `setWasm` and no `wasm` variable at all with this approach -- `js/index.js` doesn't need to import `online.js` for any reason.
 
 ```js
 import { joinRoom } from '@trystero-p2p/torrent';
+// this file is copied by wasm-bindgen into pkg/snippets/<hash>/js/online.js for the
+// #[wasm_bindgen(module = "/js/online.js")] extern block in src/game/online.rs to call
+// into; importing the exported Rust functions back via this relative path (the
+// documented wasm-bindgen JS-snippet convention) is what lets this file call back into
+// wasm directly, rather than needing a wasm module reference handed in from elsewhere --
+// the naive approach (a separate js/index.js import passing a wasm reference in) silently
+// breaks, because wasm-bindgen's copied snippet is a distinct module instance from
+// whatever else imports "./online.js" directly, so state set on one is invisible to the other
+import {
+	on_peer_connected,
+	on_peer_disconnected,
+	on_connection_error,
+	on_init_received,
+	on_action_received,
+} from '../../../index_bg.js';
 
 // identifies this app in Trystero's public signaling namespace -- not a secret,
 // just keeps our rooms from colliding with unrelated apps using the same relays
@@ -435,37 +454,44 @@ const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I/L
 const generateRoomCode = () =>
 	Array.from({ length: 6 }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join('');
 
+const CONNECT_TIMEOUT_MS = 30000;
+
 let room = null;
 let initAction = null;
 let moveAction = null;
-let wasm = null;
 
-// called once from js/index.js after the wasm module has loaded
-export const setWasm = wasmModule => {
-	wasm = wasmModule;
+const withConnectTimeout = () => {
+	const timer = setTimeout(() => {
+		on_connection_error();
+	}, CONNECT_TIMEOUT_MS);
+	return () => clearTimeout(timer);
 };
 
-const attachRoomListeners = () => {
-	room.onPeerJoin = () => wasm && wasm.on_peer_connected();
-	room.onPeerLeave = () => wasm && wasm.on_peer_disconnected();
-
+const attachMessageActions = () => {
 	initAction = room.makeAction('init');
 	moveAction = room.makeAction('move');
 
 	initAction.onMessage = data => {
-		wasm && wasm.on_init_received(data.deck, data.hand1, data.hand2);
+		on_init_received(data.deck, data.hand1, data.hand2);
 	};
 	moveAction.onMessage = data => {
-		wasm && wasm.on_action_received(data.clicks);
+		on_action_received(data.clicks);
 	};
 };
 
 export const js_create_room = () => {
 	const code = generateRoomCode();
 	room = joinRoom({ appId: APP_ID, turnConfig: TURN_CONFIG }, code, {
-		onJoinError: () => wasm && wasm.on_connection_error(),
+		onJoinError: () => on_connection_error(),
 	});
-	attachRoomListeners();
+	const clearTimeoutFn = withConnectTimeout();
+	room.onPeerJoin = () => {
+		clearTimeoutFn();
+		on_peer_connected();
+	};
+	room.onPeerLeave = () => on_peer_disconnected();
+	attachMessageActions();
+
 	return code;
 };
 
@@ -475,9 +501,15 @@ export const js_join_room = code => {
 	// different (nonexistent) room and only fail 30s later via the connect timeout
 	const normalizedCode = code.trim().toUpperCase();
 	room = joinRoom({ appId: APP_ID, turnConfig: TURN_CONFIG }, normalizedCode, {
-		onJoinError: () => wasm && wasm.on_connection_error(),
+		onJoinError: () => on_connection_error(),
 	});
-	attachRoomListeners();
+	const clearTimeoutFn = withConnectTimeout();
+	room.onPeerJoin = () => {
+		clearTimeoutFn();
+		on_peer_connected();
+	};
+	room.onPeerLeave = () => on_peer_disconnected();
+	attachMessageActions();
 };
 
 export const js_send_init = (deck, hand1, hand2) => {
@@ -496,23 +528,30 @@ export const js_leave_room = () => {
 };
 
 export const getRoomCodeFromUrl = () => new URLSearchParams(window.location.search).get('room');
+
+export const js_copy_to_clipboard = text => {
+	navigator.clipboard && navigator.clipboard.writeText(text).catch(() => {});
+};
 ```
 
-- [ ] **Step 3: Wire the wasm module reference in `js/index.js`**
+(`js_copy_to_clipboard` belongs to Task 6, included here since it lives in the same file and the file is shown in full above rather than as a diff.)
 
-Replace the contents of `js/index.js`:
+Note this version already includes the Task 7 connect-timeout logic (`withConnectTimeout`) -- since `js/online.js` is one cohesive file, it was more natural to implement it in one pass than to write a Task-3-only version and immediately overwrite it in Task 7. Task 7 below only adds the Rust-side error/status text; there's no further JS change needed there.
+
+- [x] **Step 3: `js/index.js` needs no changes for this task**
+
+Because `online.js` no longer needs anything handed to it from outside (no `setWasm`), `js/index.js` keeps its original two-line content unchanged:
 
 ```js
 import { initI18n } from './i18n.js';
-import { setWasm } from './online.js';
 
 import('./katex.js');
-import('../pkg/index.js').then(setWasm).catch(console.error);
+import('../pkg/index.js').catch(console.error);
 
 initI18n();
 ```
 
-- [ ] **Step 4: Add the Rust side of the boundary**
+- [x] **Step 4: Add the Rust side of the boundary**
 
 Append to `src/game/online.rs` (after the `OnlineSession` impl block):
 
@@ -577,12 +616,12 @@ pub fn on_peer_disconnected() {
 pub fn on_connection_error() {}
 ```
 
-- [ ] **Step 5: Verify it compiles**
+- [x] **Step 5: Verify it compiles**
 
 Run: `cargo check --lib`
 Expected: no errors. (This checks the Rust side only; `js_create_room`/`js_join_room`/`js_leave_room` are declared but not yet called from anywhere outside this module, which is fine — `create_room`/`join_room`/`leave_room` are `pub` for Task 6's UI wiring to call.)
 
-- [ ] **Step 6: Verify the JS side loads without errors**
+- [x] **Step 6: Verify the JS side loads without errors**
 
 Run `yarn install` then `yarn build`, confirm it completes without error (this doesn't yet exercise the connection — that needs the UI from Task 6 — but confirms the new module bundles cleanly):
 
@@ -593,7 +632,7 @@ yarn build
 
 Expected: build succeeds, no webpack errors about `@trystero-p2p/torrent` or `js/online.js`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add package.json yarn.lock js/online.js js/index.js src/game/online.rs
@@ -612,7 +651,7 @@ git commit -m "Add Trystero room create/join and connect/disconnect wiring"
 - Consumes: `cards_to_bytes`/`bytes_to_cards` (Task 1), `Game::new()`/`Field::new()` (existing), `card_counts::get_new_deck` (existing).
 - Produces: host sends `init` after connecting; both sides end up with `GAME` set to the same match. Used by Task 5 (which needs a synced `Game` to relay moves against) and Task 6 (UI transitions to the game screen once this completes).
 
-- [ ] **Step 1: Implement the host's send-on-connect and the joiner's receive**
+- [x] **Step 1: Implement the host's send-on-connect and the joiner's receive**
 
 Modify `src/game/online.rs`'s `on_peer_connected` and add the receive handler. Replace the `on_peer_connected` function with:
 
@@ -680,7 +719,7 @@ fn start_online_game(mut game: crate::game::structs::Game) {
 }
 ```
 
-- [ ] **Step 2: Add the constructor `Game::from_online_parts` used above**
+- [x] **Step 2: Add the constructor `Game::from_online_parts` used above**
 
 Modify `src/game/structs.rs` — add this method inside `impl Game` (after `pub fn new()`):
 
@@ -710,16 +749,16 @@ Modify `src/game/structs.rs` — add this method inside `impl Game` (after `pub 
     }
 ```
 
-- [ ] **Step 3: Verify it compiles**
+- [x] **Step 3: Verify it compiles**
 
 Run: `cargo check --lib`
 Expected: no errors.
 
-- [ ] **Step 4: Verify with two Playwright browser contexts**
+- [x] **Step 4: Verify with two Playwright browser contexts**
 
 This can't be checked with `cargo test` (it needs two live WebRTC peers). Write a throwaway script in the scratchpad directory, run it against the deployed Pages URL once Task 6 (UI) exists — note this verification step in Task 6 instead, since there's no UI yet to trigger `create_room`/`join_room` from. **Skip live verification for this task specifically; it will be verified together with Task 6's UI as part of that task's Playwright check**, which confirms both sides render the identical field/hands after connecting.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/game/online.rs src/game/structs.rs
@@ -738,7 +777,7 @@ git commit -m "Sync initial deck and hands when an online match connects"
 - Consumes: `OnlineSession::record_click`/`take_outgoing` (Task 2), `branch_turn_phase`/`next_turn` (existing, already `pub`).
 - Produces: `on_action_received(clicks: Vec<String>)` (Rust, called from JS). Local clicks during the online player's own turn get buffered and sent; the access-control guard extends to online mode. Used by Task 6/7 for full end-to-end play.
 
-- [ ] **Step 1: Extend the access-control guard in `handle_mousedown`**
+- [x] **Step 1: Extend the access-control guard in `handle_mousedown`**
 
 Modify `src/events/mousedown_handler.rs`. The existing PLAYAI guard is:
 
@@ -779,7 +818,7 @@ Replace it with (adding the online-mode case directly below):
     }
 ```
 
-- [ ] **Step 2: Buffer local clicks and flush on turn completion**
+- [x] **Step 2: Buffer local clicks and flush on turn completion**
 
 In the same file, modify `handle_mousedown` to record the click right before dispatching (after the two guards above, right before the `match turn { ... }` block):
 
@@ -831,7 +870,7 @@ Replace with:
 }
 ```
 
-- [ ] **Step 3: Add `flush_outgoing_action`, `js_send_action` binding, and `on_action_received` to `game/online.rs`**
+- [x] **Step 3: Add `flush_outgoing_action`, `js_send_action` binding, and `on_action_received` to `game/online.rs`**
 
 Add to the `extern "C"` block in `src/game/online.rs`:
 
@@ -949,17 +988,17 @@ pub fn on_action_received(clicks: Vec<String>) {
 
 (`web_sys::console::log_1` above needs the `"console"` web-sys feature — already enabled in `Cargo.toml:47`, no change needed.)
 
-- [ ] **Step 4: Verify it compiles**
+- [x] **Step 4: Verify it compiles**
 
 Run: `cargo check --lib`
 Expected: no errors.
 
-- [ ] **Step 5: Run the full test suite**
+- [x] **Step 5: Run the full test suite**
 
 Run: `cargo test --no-fail-fast 2>&1 | grep -E "test result|FAILED"`
 Expected: same results as Task 2's step 4 (one pre-existing unrelated failure only).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/events/mousedown_handler.rs src/game/online.rs
@@ -981,7 +1020,7 @@ git commit -m "Relay and replay moves for online matches"
 - Consumes: `online::create_room() -> String`, `online::join_room(code: String)`, `online::leave_room()` (Task 3), `getRoomCodeFromUrl()` (Task 3).
 - Produces: a usable end-to-end flow. This is the task whose Playwright verification exercises Tasks 3-5 together for the first time.
 
-- [ ] **Step 1: Add the HTML**
+- [x] **Step 1: Add the HTML**
 
 Modify `static/index.html`. Add the menu button inside `<div id="menu-MENU" class="menu-item">`, after the `button-PLAYAI` line:
 
@@ -1025,7 +1064,7 @@ Add a new panel as a sibling of `menu-SETTINGS`/`menu-TUTORIAL` (place it right 
 				</div>
 ```
 
-- [ ] **Step 2: Add CSS for the new panel**
+- [x] **Step 2: Add CSS for the new panel**
 
 Modify `static/index.css` — append:
 
@@ -1062,7 +1101,7 @@ Modify `static/index.css` — append:
 }
 ```
 
-- [ ] **Step 3: Add i18n strings**
+- [x] **Step 3: Add i18n strings**
 
 Modify `js/i18n.js`. In the `en` object, add after `'menu.playai': 'Play vs AI',`:
 
@@ -1090,7 +1129,7 @@ In the `ja` object, add after `'menu.playai': 'AI対戦',`:
 
 (Status text is set dynamically from Rust, not via `data-i18n` — Task 7 covers those strings when the states they describe are introduced.)
 
-- [ ] **Step 4: Wire up the buttons and URL param in `src/menu.rs`**
+- [x] **Step 4: Wire up the buttons and URL param in `src/menu.rs`**
 
 Add a new struct and wire it up. Modify the imports at the top of `src/menu.rs`:
 
@@ -1274,7 +1313,7 @@ Also modify `MainMenu::new`'s button id list to include the new button:
             vec!["PLAYVS", "PLAYAI", "PLAYONLINE", "TUTORIAL", "SETTINGS", "CREDITS"]
 ```
 
-- [ ] **Step 5: Add `copy_to_clipboard` and `room_code_from_url` to `game/online.rs`**
+- [x] **Step 5: Add `copy_to_clipboard` and `room_code_from_url` to `game/online.rs`**
 
 Add to the `extern "C"` block:
 
@@ -1313,12 +1352,12 @@ pub fn room_code_from_url() -> Option<String> {
 }
 ```
 
-- [ ] **Step 6: Verify it compiles**
+- [x] **Step 6: Verify it compiles**
 
 Run: `cargo check --lib`
 Expected: no errors.
 
-- [ ] **Step 7: Build and verify with two Playwright browser contexts**
+- [x] **Step 7: Build and verify with two Playwright browser contexts**
 
 ```bash
 yarn install
@@ -1331,7 +1370,7 @@ Then push to a branch/deploy or run the dev server, and use two separate Playwri
 3. Wait ~2s for the WebRTC handshake.
 4. Screenshot both contexts: both should show the game screen (not the menu) with identical field cards (`1, x, x²` on both sides) and different (but both 7-card) hands.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add static/index.html static/index.css js/i18n.js js/online.js src/menu.rs src/game/online.rs Cargo.toml
@@ -1344,14 +1383,13 @@ git commit -m "Add Play Online menu, create/join panel, and clipboard/URL helper
 
 **Files:**
 - Modify: `src/game/online.rs`
-- Modify: `js/online.js`
 - Modify: `js/i18n.js`
 
 **Interfaces:**
-- Consumes: `on_peer_disconnected` (Task 3, extends it), `on_connection_error` (Task 3, extends it).
+- Consumes: `on_peer_disconnected`, `on_connection_error` (both already declared as empty/minimal stubs in Task 3; this task fills in their bodies). The connect-timeout JS logic itself is already in place from Task 3 (`js/online.js` needs no further changes here).
 - Produces: user-visible disconnect notice + return to menu; a 30s no-peer timeout with retry.
 
-- [ ] **Step 1: Show a notice and return to menu on disconnect**
+- [x] **Step 1: Show a notice and return to menu on disconnect**
 
 Modify `on_peer_disconnected` in `src/game/online.rs`:
 
@@ -1384,71 +1422,9 @@ pub fn on_peer_disconnected() {
 }
 ```
 
-- [ ] **Step 2: Add a connection timeout with retry**
+- [x] **Step 2: (already done)** The connect-timeout logic (`CONNECT_TIMEOUT_MS`, `withConnectTimeout`, wiring in `js_create_room`/`js_join_room`) is already part of the `js/online.js` written in Task 3 — no separate step needed here.
 
-Modify `js/online.js`'s `js_create_room` and `js_join_room` to start a 30-second timer that calls the error callback if `onPeerJoin` hasn't fired yet:
-
-```js
-const CONNECT_TIMEOUT_MS = 30000;
-
-const withConnectTimeout = () => {
-	const timer = setTimeout(() => {
-		wasm && wasm.on_connection_error();
-	}, CONNECT_TIMEOUT_MS);
-	return () => clearTimeout(timer);
-};
-
-export const js_create_room = () => {
-	const code = generateRoomCode();
-	room = joinRoom({ appId: APP_ID, turnConfig: TURN_CONFIG }, code, {
-		onJoinError: () => wasm && wasm.on_connection_error(),
-	});
-	const clearTimeoutFn = withConnectTimeout();
-	room.onPeerJoin = () => {
-		clearTimeoutFn();
-		wasm && wasm.on_peer_connected();
-	};
-	room.onPeerLeave = () => wasm && wasm.on_peer_disconnected();
-
-	initAction = room.makeAction('init');
-	moveAction = room.makeAction('move');
-	initAction.onMessage = data => {
-		wasm && wasm.on_init_received(data.deck, data.hand1, data.hand2);
-	};
-	moveAction.onMessage = data => {
-		wasm && wasm.on_action_received(data.clicks);
-	};
-
-	return code;
-};
-
-export const js_join_room = code => {
-	// see the Task 3 version of this function for why this is normalized
-	const normalizedCode = code.trim().toUpperCase();
-	room = joinRoom({ appId: APP_ID, turnConfig: TURN_CONFIG }, normalizedCode, {
-		onJoinError: () => wasm && wasm.on_connection_error(),
-	});
-	const clearTimeoutFn = withConnectTimeout();
-	room.onPeerJoin = () => {
-		clearTimeoutFn();
-		wasm && wasm.on_peer_connected();
-	};
-	room.onPeerLeave = () => wasm && wasm.on_peer_disconnected();
-
-	initAction = room.makeAction('init');
-	moveAction = room.makeAction('move');
-	initAction.onMessage = data => {
-		wasm && wasm.on_init_received(data.deck, data.hand1, data.hand2);
-	};
-	moveAction.onMessage = data => {
-		wasm && wasm.on_action_received(data.clicks);
-	};
-};
-```
-
-(This inlines `attachRoomListeners` into each function so the timeout can be cleared specifically on the first peer-join; remove the now-unused standalone `attachRoomListeners` function.)
-
-- [ ] **Step 3: Show the timeout/error message and allow retry**
+- [x] **Step 3: Show the timeout/error message and allow retry**
 
 Modify `on_connection_error` in `src/game/online.rs`:
 
@@ -1469,25 +1445,25 @@ pub fn on_connection_error() {
 
 Since `create_room`/`join_room` in `src/menu.rs`'s listeners already re-run the whole flow on each button click, retrying is just clicking Create/Join again — no additional retry-button UI is needed.
 
-- [ ] **Step 4: Add the i18n strings for the status messages**
+- [x] **Step 4: Add the i18n strings for the status messages**
 
 Modify `js/i18n.js`. The status text is set directly from Rust (`set_text_content`) rather than via `data-i18n`, so it doesn't automatically switch with the language toggle. Given the existing `gameover-WINNER` text has this same limitation already (documented as a known scope limitation in an earlier session), apply the same approach here: leave these three Rust-set status strings in English for now, consistent with that existing precedent, and note it in the final summary.
 
-- [ ] **Step 5: Verify it compiles**
+- [x] **Step 5: Verify it compiles**
 
 Run: `cargo check --lib`
 Expected: no errors.
 
-- [ ] **Step 6: Verify with two Playwright browser contexts**
+- [x] **Step 6: Verify with two Playwright browser contexts**
 
 1. Repeat Task 6 Step 7's create/join/connect flow.
 2. Once both sides show the game screen, close context B entirely (`await contextB.close()`).
-3. In context A, wait ~1s and screenshot: it should show the "opponent disconnected" status and be back at the Play Online panel (not the game canvas).
-4. Separately, open a single context, click Create Game, and do **not** join from anywhere — this plan doesn't require waiting the full 30s to verify in CI, but do run it once manually to confirm the message appears (or reduce `CONNECT_TIMEOUT_MS` temporarily while testing, then restore it).
+3. In context A, poll every 5s for up to ~30s: WebRTC's `onPeerLeave` detection is not instant -- in local testing it consistently took roughly 10-15s (ICE connection-state monitoring, not an immediate signal) before context A's menu reopened and the status showed "Your opponent disconnected. Returning to the menu." A short (~1-2s) wait will falsely look broken; don't conclude anything is wrong until at least 15-20s have passed.
+4. Separately, open a single context, click Create Game, and don't join from anywhere. Verified in local testing: at 30s the status correctly updates to "Couldn't connect. Please try again." (confirms `on_connection_error`'s timeout path fires correctly).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
-git add src/game/online.rs js/online.js js/i18n.js
+git add src/game/online.rs js/i18n.js
 git commit -m "Handle online match disconnects and connection timeouts"
 ```

@@ -1,4 +1,19 @@
 import { joinRoom } from '@trystero-p2p/torrent';
+// this file is copied by wasm-bindgen into pkg/snippets/<hash>/js/online.js for the
+// #[wasm_bindgen(module = "/js/online.js")] extern block in src/game/online.rs to call
+// into; importing the exported Rust functions back via this relative path (the
+// documented wasm-bindgen JS-snippet convention) is what lets this file call back into
+// wasm directly, rather than needing a wasm module reference handed in from elsewhere --
+// the naive approach (a separate js/index.js import passing a wasm reference in) silently
+// breaks, because wasm-bindgen's copied snippet is a distinct module instance from
+// whatever else imports "./online.js" directly, so state set on one is invisible to the other
+import {
+	on_peer_connected,
+	on_peer_disconnected,
+	on_connection_error,
+	on_init_received,
+	on_action_received,
+} from '../../../index_bg.js';
 
 // identifies this app in Trystero's public signaling namespace -- not a secret,
 // just keeps our rooms from colliding with unrelated apps using the same relays
@@ -28,16 +43,10 @@ const CONNECT_TIMEOUT_MS = 30000;
 let room = null;
 let initAction = null;
 let moveAction = null;
-let wasm = null;
-
-// called once from js/index.js after the wasm module has loaded
-export const setWasm = wasmModule => {
-	wasm = wasmModule;
-};
 
 const withConnectTimeout = () => {
 	const timer = setTimeout(() => {
-		wasm && wasm.on_connection_error();
+		on_connection_error();
 	}, CONNECT_TIMEOUT_MS);
 	return () => clearTimeout(timer);
 };
@@ -47,24 +56,24 @@ const attachMessageActions = () => {
 	moveAction = room.makeAction('move');
 
 	initAction.onMessage = data => {
-		wasm && wasm.on_init_received(data.deck, data.hand1, data.hand2);
+		on_init_received(data.deck, data.hand1, data.hand2);
 	};
 	moveAction.onMessage = data => {
-		wasm && wasm.on_action_received(data.clicks);
+		on_action_received(data.clicks);
 	};
 };
 
 export const js_create_room = () => {
 	const code = generateRoomCode();
 	room = joinRoom({ appId: APP_ID, turnConfig: TURN_CONFIG }, code, {
-		onJoinError: () => wasm && wasm.on_connection_error(),
+		onJoinError: () => on_connection_error(),
 	});
 	const clearTimeoutFn = withConnectTimeout();
 	room.onPeerJoin = () => {
 		clearTimeoutFn();
-		wasm && wasm.on_peer_connected();
+		on_peer_connected();
 	};
-	room.onPeerLeave = () => wasm && wasm.on_peer_disconnected();
+	room.onPeerLeave = () => on_peer_disconnected();
 	attachMessageActions();
 
 	return code;
@@ -76,14 +85,14 @@ export const js_join_room = code => {
 	// different (nonexistent) room and only fail 30s later via the connect timeout
 	const normalizedCode = code.trim().toUpperCase();
 	room = joinRoom({ appId: APP_ID, turnConfig: TURN_CONFIG }, normalizedCode, {
-		onJoinError: () => wasm && wasm.on_connection_error(),
+		onJoinError: () => on_connection_error(),
 	});
 	const clearTimeoutFn = withConnectTimeout();
 	room.onPeerJoin = () => {
 		clearTimeoutFn();
-		wasm && wasm.on_peer_connected();
+		on_peer_connected();
 	};
-	room.onPeerLeave = () => wasm && wasm.on_peer_disconnected();
+	room.onPeerLeave = () => on_peer_disconnected();
 	attachMessageActions();
 };
 
