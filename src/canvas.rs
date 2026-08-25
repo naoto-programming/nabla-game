@@ -156,15 +156,20 @@ impl Canvas {
         self.calculate_render_positions();
     }
 
-    /// the total vertical space the current layout needs to render every element at
-    /// a properly-sized (not squeezed-to-its-floor) field -- see resize's
-    /// scroll-fallback comment for why this matters. Deliberately uses
-    /// player_card_height * 2.0 (field_basis_height's own cap in
-    /// update_render_constants) rather than self.render_constants.field_sizes.height:
-    /// that field is whatever the *current*, possibly too-short, canvas_bounds.y
-    /// squeezed it down to, which would make this function chase a moving target
-    /// (grow to fit a squeezed size, recompute a still-too-small size, ...) instead
-    /// of the one true height the field wants once it actually has room
+    /// the total vertical space the current layout needs -- see resize's
+    /// scroll-fallback comment for why this matters.
+    ///
+    /// Uses field_target (below) rather than blindly assuming the field should
+    /// always reach its cap (player_card_height * 2.0): on a normal desktop window
+    /// the field naturally computes to something comfortably large but still well
+    /// under that cap (there's no reason it needs to be at its absolute maximum),
+    /// and forcing growth to reach the cap anyway grew the canvas ~80px taller than
+    /// the viewport on every ordinary desktop window -- silently shifting the whole
+    /// bottom-anchored hand down and violating "desktop stays exactly as it was".
+    /// field_target only escalates to the cap when the field is currently being
+    /// squeezed uncomfortably small (mobile's taller two-row hand leaving too little
+    /// room, or a genuinely short window of any size) -- that's the actual "broken"
+    /// case (KaTeX text overflowing an undersized card) this exists to fix.
     fn required_canvas_height(&self) -> f64 {
         let Sizes {
             height: player_card_height,
@@ -172,10 +177,20 @@ impl Canvas {
             ..
         } = self.render_constants.player_sizes;
         let Sizes {
+            height: current_field_height,
             gutter: field_basis_gutter,
             ..
         } = self.render_constants.field_sizes;
         let field_basis_height_at_cap = player_card_height * 2.0;
+        // below ~90% of a hand card's own height reads as uncomfortably small; a
+        // normal desktop window's naturally-computed field height sits well above
+        // this, so it never triggers here
+        let squeeze_threshold = player_card_height * 0.9;
+        let field_target = if current_field_height < squeeze_threshold {
+            field_basis_height_at_cap
+        } else {
+            current_field_height
+        };
 
         let is_mobile = is_mobile_layout(self.canvas_bounds.x, self.canvas_bounds.y);
         let hand_zone = hand_zone_height(is_mobile, player_card_height, player_card_gutter);
@@ -193,7 +208,7 @@ impl Canvas {
         hand_zone * 2.0 // both players' hand zones
             + player_card_gutter // bottom edge margin
             + top_margin // top edge margin
-            + field_basis_height_at_cap * 2.0 // the field's own two rows, at their natural size
+            + field_target * 2.0 // the field's own two rows
             + field_basis_gutter * 3.0 // gutters around/between the field rows
     }
 

@@ -69,8 +69,15 @@ pub fn maybe_take_ai_turn() {
 
 fn take_ai_turn() {
     let game = unsafe { GAME.as_ref().unwrap() };
-    let candidates =
-        generate_candidates_for(AI_PLAYER_NUM, &game.player_2, &game.field, game.turn.number);
+    // true: the AI's own real candidates must include Mult/Div, or it would never
+    // consider (or be able to play) those cards at all
+    let candidates = generate_candidates_for(
+        AI_PLAYER_NUM,
+        &game.player_2,
+        &game.field,
+        game.turn.number,
+        true,
+    );
     if candidates.is_empty() {
         // no legal move within the set the AI can evaluate (eg. hand is entirely
         // basis cards with no empty field slot to play them into). A human in this
@@ -186,12 +193,20 @@ fn apply_half_to_field(half_start: usize, is_laplacian: bool, field: &Field) -> 
 /// `field`, generalized so the same logic can score the AI's own candidates and
 /// predict the opponent's best reply one ply ahead (see apply_lookahead). Mult/Div
 /// are restricted to pairs of field bases (skipping hand-basis operands and 3+-way
-/// combinations) to keep the search small; every other card type is fully covered
+/// combinations) to keep the search small; every other card type is fully covered.
+/// `include_multiselect` gates the Mult/Div branch entirely -- it's the single most
+/// expensive part of this search (up to 30 candidates, each building an actual
+/// symbolic Basis via apply_multi_card), and the *opponent's* simulated reply
+/// (see best_reply_score) only needs a cheap, good-enough danger estimate, not a
+/// fully exhaustive one -- doing a full search on both the AI's own candidates AND
+/// every one of their simulated opponent replies is what made deep lookahead slow
+/// enough to look like the AI had frozen
 fn generate_candidates_for(
     player_num: u32,
     hand: &[Card],
     field: &Field,
     turn_number: u32,
+    include_multiselect: bool,
 ) -> Vec<AiMove> {
     let mut moves = vec![];
 
@@ -231,7 +246,7 @@ fn generate_candidates_for(
                     });
                 }
             }
-            Card::AlgebraicCard(AlgebraicCard::Div | AlgebraicCard::Mult) => {
+            Card::AlgebraicCard(AlgebraicCard::Div | AlgebraicCard::Mult) if include_multiselect => {
                 for a in 0..6 {
                     for b in 0..6 {
                         if a == b || field[a].basis.is_none() || field[b].basis.is_none() {
@@ -303,9 +318,11 @@ fn generate_candidates_for(
 /// occupying it (ie. the opponent's best reply after one of the AI's candidate
 /// moves). 0.0 (neutral) if they'd have no legal move to evaluate at all, since being
 /// stuck isn't scored as a loss by this heuristic (see take_ai_turn's own forfeit
-/// handling for the AI's symmetric case)
+/// handling for the AI's symmetric case). Always searched without Mult/Div (see
+/// generate_candidates_for's include_multiselect doc) -- this is a danger *estimate*,
+/// not the opponent's real move, so it doesn't need to be exhaustive
 fn best_reply_score(player_num: u32, hand: &[Card], field: &Field, turn_number: u32) -> f64 {
-    generate_candidates_for(player_num, hand, field, turn_number)
+    generate_candidates_for(player_num, hand, field, turn_number, false)
         .iter()
         .map(|mv| mv.score)
         .fold(f64::MIN, f64::max)
@@ -313,42 +330,49 @@ fn best_reply_score(player_num: u32, hand: &[Card], field: &Field, turn_number: 
 }
 
 /// how many of the AI's top-scored candidates get the (more expensive) opponent
-/// lookahead applied -- bounds the O(pool * opponent_candidates) search so a turn
-/// with many candidates (eg. several Mult/Div cards in hand) still resolves quickly.
-/// Candidates outside this pool were already meaningfully worse by immediate score,
-/// so skipping their lookahead is an acceptable approximation
-const LOOKAHEAD_POOL: usize = 15;
+/// lookahead applied on Medium -- bounds the search since Medium doesn't need to be
+/// perfect, just reasonably aware. Hard uses usize::MAX (every candidate) instead:
+/// with only a capped pool, a candidate ranked just outside it could still end up
+/// chosen (nothing else beat its unadjusted score) with its real risk never having
+/// been checked at all -- which is exactly how Hard could still walk into a bad
+/// trade despite having lookahead. Hard is expected to always find the true best
+/// move, so it must check all of them; the cheap (no Mult/Div) inner search in
+/// best_reply_score is what keeps that affordable
+const MEDIUM_LOOKAHEAD_POOL: usize = 15;
 /// how heavily the opponent's best reply weighs against the AI's own immediate gain
 /// when ranking moves -- tuned so a move that hands the opponent a big reply is
 /// usually worse than a smaller move that doesn't, without completely overriding a
 /// large enough immediate gain
 const LOOKAHEAD_WEIGHT: f64 = 0.75;
 
-/// re-ranks the AI's best candidates by subtracting a weighted estimate of the
-/// human's best reply one ply ahead, so the AI stops walking into moves that look
-/// good immediately but hand the opponent an even better follow-up (eg. clearing an
-/// opponent slot while leaving one of its own exposed to an easy kill next turn --
-/// the original one-ply-only heuristic couldn't see this at all)
-fn apply_lookahead(mut candidates: Vec<AiMove>, turn_number: u32) -> Vec<AiMove> {
+/// re-ranks the AI's best candidates (up to `pool` of them, by current score) by
+/// subtracting a weighted estimate of the human's best reply one ply ahead, so the
+/// AI stops walking into moves that look good immediately but hand the opponent an
+/// even better follow-up (eg. clearing an opponent slot while leaving one of its own
+/// exposed to an easy kill next turn -- the original one-ply-only heuristic couldn't
+/// see this at all)
+fn apply_lookahead(mut candidates: Vec<AiMove>, turn_number: u32, pool: usize) -> Vec<AiMove> {
     let game = unsafe { GAME.as_ref().unwrap() };
     let opponent_hand = &game.player_1;
 
     candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-    for mv in candidates.iter_mut().take(LOOKAHEAD_POOL) {
+    for mv in candidates.iter_mut().take(pool) {
         let reply = best_reply_score(1, opponent_hand, &mv.resulting_field, turn_number + 1);
         mv.score -= LOOKAHEAD_WEIGHT * reply;
     }
     candidates
 }
 
-/// difficulty-scaled selection: Hard and Medium both look one ply ahead (see
-/// apply_lookahead) before ranking -- Hard always takes the best-adjusted move
-/// (strong enough that walking into a bad trade is rare), Medium picks randomly from
-/// a shrinking top slice of the adjusted ranking. Easy skips lookahead entirely and
-/// stays mostly random, so it remains reliably beatable
+/// difficulty-scaled selection: Hard looks one ply ahead across *every* candidate
+/// (see apply_lookahead's doc on why a pool isn't safe here) and always takes the
+/// best-adjusted move. Medium also looks ahead, but only across its top
+/// MEDIUM_LOOKAHEAD_POOL candidates, and picks randomly from a shrinking top slice
+/// of that adjusted ranking -- reasonably aware, not required to be perfect. Easy
+/// skips lookahead entirely and stays mostly random, so it remains reliably beatable
 fn choose_move(candidates: Vec<AiMove>, difficulty: AiDifficulty, turn_number: u32) -> AiMove {
     let mut candidates = match difficulty {
-        AiDifficulty::Hard | AiDifficulty::Medium => apply_lookahead(candidates, turn_number),
+        AiDifficulty::Hard => apply_lookahead(candidates, turn_number, usize::MAX),
+        AiDifficulty::Medium => apply_lookahead(candidates, turn_number, MEDIUM_LOOKAHEAD_POOL),
         AiDifficulty::Easy => candidates,
     };
     candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
@@ -370,4 +394,77 @@ fn choose_move(candidates: Vec<AiMove>, difficulty: AiDifficulty, turn_number: u
         }
     };
     candidates.remove(index)
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+    use crate::game::structs::Game;
+
+    /// stacks the hand with the single most expensive card type (Mult/Div, up to 30
+    /// pair-combinations each) to stress the search as hard as realistically possible
+    fn worst_case_hand() -> Vec<Card> {
+        vec![
+            Card::AlgebraicCard(AlgebraicCard::Mult),
+            Card::AlgebraicCard(AlgebraicCard::Div),
+            Card::AlgebraicCard(AlgebraicCard::Mult),
+            Card::AlgebraicCard(AlgebraicCard::Div),
+            Card::DerivativeCard(DerivativeCard::Derivative),
+            Card::DerivativeCard(DerivativeCard::Integral),
+            Card::AlgebraicCard(AlgebraicCard::Sqrt),
+        ]
+    }
+
+    fn full_field() -> Field {
+        let mut field = Field::new();
+        for i in 0..6 {
+            let basis = match i % 3 {
+                0 => Basis::from(1),
+                1 => Basis::from(BasisCard::X),
+                _ => Basis::from(BasisCard::X2),
+            };
+            field[i] = FieldBasis::new(&basis);
+        }
+        field
+    }
+
+    /// reproduces the "AI stops" report: with the pool cap removed for Hard (so it
+    /// checks every one of its own candidates) and both the AI's and opponent's hands
+    /// stacked with the most expensive card type in both slots of the lookahead, does
+    /// a single decision still complete in a time that reads as responsive rather
+    /// than frozen? This is the actual worst case the real game can produce (Mult/Div
+    /// is the single most expensive branch; nothing is more expensive than having it
+    /// on both sides of the nested search)
+    #[test]
+    fn test_hard_ai_decision_completes_quickly_in_worst_case() {
+        let field = full_field();
+        let ai_hand = worst_case_hand();
+        let opponent_hand = worst_case_hand();
+
+        let mut game = Game::new();
+        game.field = field.clone();
+        game.player_1 = opponent_hand;
+        game.player_2 = ai_hand.clone();
+        game.turn.number = 4;
+        unsafe { crate::GAME = Some(game) };
+
+        let start = std::time::Instant::now();
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4, true);
+        assert!(!candidates.is_empty(), "worst-case hand should still have legal moves");
+        let candidate_count = candidates.len();
+        let chosen = choose_move(candidates, AiDifficulty::Hard, 4);
+        let elapsed = start.elapsed();
+
+        println!(
+            "worst-case Hard AI: {} candidates, decided in {:?}, chose {} clicks",
+            candidate_count,
+            elapsed,
+            chosen.clicks.len()
+        );
+        assert!(
+            elapsed.as_millis() < 3000,
+            "AI decision took {:?} against a worst-case hand -- too slow, risks looking frozen",
+            elapsed
+        );
+    }
 }
