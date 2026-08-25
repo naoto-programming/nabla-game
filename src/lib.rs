@@ -13,7 +13,7 @@ use events::event_listeners::*;
 
 mod canvas;
 use canvas::*;
-mod render;
+pub mod render;
 
 mod util;
 
