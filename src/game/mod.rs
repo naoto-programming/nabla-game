@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod card_counts;
+pub mod card_encoding;
 pub mod cards;
 pub mod field;
 pub mod flags;
