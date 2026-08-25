@@ -2,6 +2,11 @@
 <html>
 	<head>
 		<meta charset="UTF-8" />
+		<!-- without this, mobile browsers assume a ~980px "desktop" layout viewport and
+		     scale the whole page down to fit, rather than reporting the real device width
+		     -- which meant is_mobile_layout() (driven by window.innerWidth) never actually
+		     saw a narrow width on a real phone, so the mobile portrait layout never triggered -->
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<title>Nabla Game</title>
 		<link rel="stylesheet" href="index.css" />
 		<link rel="icon" href="favicon.png" />

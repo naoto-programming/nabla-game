@@ -20,14 +20,14 @@ import {
 const APP_ID = 'nabla-game-naoto-programming';
 
 // Open Relay Project's free, no-signup TURN fallback (used only when a direct
-// P2P connection can't be established, eg. restrictive NATs)
+// P2P connection can't be established, eg. restrictive NATs). No "?transport=tcp"
+// query string on any of these -- WebKit's RTCPeerConnection throws "Invalid TURN
+// URL query string" on that and aborts iceServers setup entirely (not just that one
+// URL), which silently broke every connection attempt on iOS/Safari specifically
+// while working fine on Chromium. Plain host:port URLs work identically everywhere.
 const TURN_CONFIG = [
 	{
-		urls: [
-			'turn:openrelay.metered.ca:80',
-			'turn:openrelay.metered.ca:443',
-			'turn:openrelay.metered.ca:443?transport=tcp',
-		],
+		urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443'],
 		username: 'openrelayproject',
 		credential: 'openrelayproject',
 	},

@@ -30,7 +30,9 @@ pub fn get_base_player_pos() -> RenderHash {
             let outer_y = if is_bottom {
                 bounds.y - player_card_height - player_card_gutter
             } else {
-                player_card_gutter
+                // extra clearance so this row doesn't sit under the fixed Main
+                // Menu / language-toggle buttons (see MOBILE_TOP_SAFE_AREA_PX)
+                MOBILE_TOP_SAFE_AREA_PX
             };
             let inner_y = if is_bottom {
                 outer_y - player_card_gutter - player_card_height

@@ -57,6 +57,14 @@ pub fn hand_zone_height(is_mobile: bool, player_card_height: f64, gutter: f64) -
     }
 }
 
+/// on mobile, the margin reserved above whichever hand ends up on top -- bigger than
+/// the plain gutter margin used everywhere else, so that hand's outer row doesn't sit
+/// underneath the persistent, viewport-fixed "Main Menu"/language-toggle buttons
+/// (which live at a fixed distance from the top of the viewport regardless of the
+/// canvas's own content or scroll position). Used by both canvas.rs's sizing
+/// (required_canvas_height) and pos.rs's actual placement, so they can't disagree
+pub const MOBILE_TOP_SAFE_AREA_PX: f64 = 120.0;
+
 pub fn player_renders_at_bottom(player_num: u32) -> bool {
     let game = unsafe { GAME.as_ref() };
     if let Some(game) = game {

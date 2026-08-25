@@ -137,6 +137,12 @@ impl Canvas {
             self.canvas_element.set_height(grown_height);
             self.hit_canvas_element.set_height(grown_height);
             self.rebounds();
+            // field_basis_height (and anything else derived from canvas_bounds.y) was
+            // computed against the old, too-short height above -- without this, the
+            // field would stay squeezed down to its floor size even though the canvas
+            // was just grown specifically to give it room, and KaTeX's fixed-size text
+            // would overflow/overlap those undersized cards
+            self.update_render_constants();
         }
 
         // CSS alone can't know the canvas's own computed pixel height, so the
@@ -150,9 +156,15 @@ impl Canvas {
         self.calculate_render_positions();
     }
 
-    /// the total vertical space the current layout needs to render every element
-    /// without overlap, at the sizes update_render_constants just computed -- see
-    /// resize's scroll-fallback comment for why this matters
+    /// the total vertical space the current layout needs to render every element at
+    /// a properly-sized (not squeezed-to-its-floor) field -- see resize's
+    /// scroll-fallback comment for why this matters. Deliberately uses
+    /// player_card_height * 2.0 (field_basis_height's own cap in
+    /// update_render_constants) rather than self.render_constants.field_sizes.height:
+    /// that field is whatever the *current*, possibly too-short, canvas_bounds.y
+    /// squeezed it down to, which would make this function chase a moving target
+    /// (grow to fit a squeezed size, recompute a still-too-small size, ...) instead
+    /// of the one true height the field wants once it actually has room
     fn required_canvas_height(&self) -> f64 {
         let Sizes {
             height: player_card_height,
@@ -160,17 +172,28 @@ impl Canvas {
             ..
         } = self.render_constants.player_sizes;
         let Sizes {
-            height: field_basis_height,
             gutter: field_basis_gutter,
             ..
         } = self.render_constants.field_sizes;
+        let field_basis_height_at_cap = player_card_height * 2.0;
 
         let is_mobile = is_mobile_layout(self.canvas_bounds.x, self.canvas_bounds.y);
         let hand_zone = hand_zone_height(is_mobile, player_card_height, player_card_gutter);
+        // exactly one of the two hand zones ends up on top regardless of which
+        // player that turns out to be (see player_renders_at_bottom) -- on mobile
+        // that top margin is the larger safe area (MOBILE_TOP_SAFE_AREA_PX), not the
+        // plain gutter, so this must match pos.rs's actual placement or the canvas
+        // would grow to the wrong height
+        let top_margin = if is_mobile {
+            MOBILE_TOP_SAFE_AREA_PX
+        } else {
+            player_card_gutter
+        };
 
         hand_zone * 2.0 // both players' hand zones
-            + player_card_gutter * 2.0 // edge margins around each hand zone
-            + field_basis_height * 2.0 // the field's own two rows
+            + player_card_gutter // bottom edge margin
+            + top_margin // top edge margin
+            + field_basis_height_at_cap * 2.0 // the field's own two rows, at their natural size
             + field_basis_gutter * 3.0 // gutters around/between the field rows
     }
 
