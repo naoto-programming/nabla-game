@@ -30,6 +30,7 @@
 				<div id="menu-MENU" class="menu-item">
 					<button class="menu-button" id="button-PLAYVS" data-i18n="menu.playvs">Play vs Friend</button>
 					<button class="menu-button" id="button-PLAYAI" data-i18n="menu.playai">Play vs AI</button>
+					<button class="menu-button" id="button-PLAYONLINE" data-i18n="menu.playonline">Play Online</button>
 					<button class="menu-button" id="button-TUTORIAL" data-i18n="menu.tutorial">Instructions</button>
 					<button class="menu-button" id="button-SETTINGS" data-i18n="menu.settings">Settings</button>
 					<button class="menu-button" id="button-CREDITS" data-i18n="menu.credits">Credits</button>
@@ -133,6 +134,33 @@
 					<button class="menu-button" id="button-RESET_CARD_COUNTS" data-i18n="cardCounts.reset">
 						Reset to Default
 					</button>
+				</div>
+				<div id="menu-PLAYONLINE" class="menu-item" hidden>
+					<div id="online-choice">
+						<button class="menu-button" id="button-ONLINE_CREATE" data-i18n="online.create">
+							Create Game
+						</button>
+						<button class="menu-button" id="button-ONLINE_JOIN_SHOW" data-i18n="online.join">
+							Join Game
+						</button>
+					</div>
+					<div id="online-create-panel" hidden>
+						<h3 data-i18n="online.roomCode">Room Code</h3>
+						<p id="online-room-code"></p>
+						<button class="menu-button" id="button-COPY_CODE" data-i18n="online.copyCode">
+							Copy Code
+						</button>
+						<button class="menu-button" id="button-COPY_LINK" data-i18n="online.copyLink">
+							Copy Link
+						</button>
+					</div>
+					<div id="online-join-panel" hidden>
+						<input id="online-join-code-input" type="text" maxlength="6" />
+						<button class="menu-button" id="button-ONLINE_JOIN_CONNECT" data-i18n="online.connect">
+							Connect
+						</button>
+					</div>
+					<p id="online-status"></p>
 				</div>
 				<div id="menu-TUTORIAL" class="menu-item" hidden>
 					<h3 data-i18n="tutorial.video">Japanese Instructional Video:</h3>

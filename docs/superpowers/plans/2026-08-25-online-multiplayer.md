@@ -1098,6 +1098,27 @@ Add a new struct and wire it up. Modify the imports at the top of `src/menu.rs`:
 use crate::game::online;
 ```
 
+Also modify the existing `main_menu_listener` (the persistent `#button-MENU` header button — it's the *only* way back to the top-level menu from any panel, including an active game, since it's the sole element outside `#menu` that's always clickable) to tear down any online session on the way out. Without this, a player who creates/joins a room and then leaves via this button leaves `ONLINE_SESSION` alive in the background; if the room's peer later connects or sends a stray message, it can still mutate the now-unrelated `GAME` the player is currently looking at (Settings, a different game mode, etc.):
+
+```rust
+        let main_menu_button = document.get_element_by_id("button-MENU").unwrap();
+        let main_menu_listener = EventListener::new(&main_menu_button, "click", |_e| {
+            let (game, menu_ref) = unsafe { (GAME.as_mut().unwrap(), MENU.as_ref()) };
+            // this is the only way back to the top-level menu from any panel, including
+            // an active game -- always tear down any online session here so a peer the
+            // player has walked away from (whether mid-match or still waiting to
+            // connect) can't keep mutating GAME in the background via late messages
+            online::leave_room();
+            game.set_state(GameState::from("MENU"));
+
+            if menu_ref.is_some() {
+                menu_ref.unwrap().activate("MENU".to_string());
+            }
+        });
+```
+
+(This is a small addition to the existing listener already in the file, immediately before its call to `game.set_state`; the rest of the listener body is unchanged. `online::leave_room()` is a safe no-op when there's no active session -- it only clears `ONLINE_SESSION` and tells the JS side to leave a Trystero room, both idempotent.)
+
 Add a new struct after `SettingsMenu`'s `impl` block closes:
 
 ```rust

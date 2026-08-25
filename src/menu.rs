@@ -8,6 +8,7 @@ use web_sys::{Document, Element, HtmlInputElement, HtmlSelectElement};
 use crate::game::ai::{AiDifficulty, AI_DIFFICULTY};
 use crate::game::card_counts::{reset_card_counts, set_card_count, CARD_COUNT_NAMES, DEFAULT_CARD_COUNTS};
 use crate::game::flags::*;
+use crate::game::online;
 use crate::game::structs::{Game, GameState};
 use crate::render::katex::clear_katex_element;
 use crate::render::util::{PLAYER_1_COLOUR, PLAYER_2_COLOUR};
@@ -26,6 +27,7 @@ pub struct Menu {
 
     pub main_menu: MainMenu,
     pub settings_menu: SettingsMenu,
+    pub online_menu: OnlineMenu,
 }
 
 impl Menu {
@@ -51,6 +53,11 @@ impl Menu {
         let main_menu_button = document.get_element_by_id("button-MENU").unwrap();
         let main_menu_listener = EventListener::new(&main_menu_button, "click", |_e| {
             let (game, menu_ref) = unsafe { (GAME.as_mut().unwrap(), MENU.as_ref()) };
+            // this is the only way back to the top-level menu from any panel, including
+            // an active game -- always tear down any online session here so a peer the
+            // player has walked away from (whether mid-match or still waiting to
+            // connect) can't keep mutating GAME in the background via late messages
+            online::leave_room();
             game.set_state(GameState::from("MENU"));
 
             if menu_ref.is_some() {
@@ -79,6 +86,7 @@ impl Menu {
 
         let main_menu = MainMenu::new(document);
         let settings_menu = SettingsMenu::new(document);
+        let online_menu = OnlineMenu::new(document);
 
         Menu {
             menu_children,
@@ -89,6 +97,7 @@ impl Menu {
             game_over_listener,
             main_menu,
             settings_menu,
+            online_menu,
         }
     }
 
@@ -132,7 +141,7 @@ impl MainMenu {
     /// extracts child elements from DOM and adds event listeners for each button
     pub fn new(document: &Document) -> Self {
         let button_elements: Vec<Element> =
-            vec!["PLAYVS", "PLAYAI", "TUTORIAL", "SETTINGS", "CREDITS"]
+            vec!["PLAYVS", "PLAYAI", "PLAYONLINE", "TUTORIAL", "SETTINGS", "CREDITS"]
                 .iter()
                 .map(|state| {
                     document
@@ -335,6 +344,119 @@ impl SettingsMenu {
             card_count_listeners,
             reset_card_counts_button,
             reset_card_counts_listener,
+        }
+    }
+}
+
+/// controller for the "Play Online" create/join panel
+#[allow(dead_code)]
+pub struct OnlineMenu {
+    create_button: Element,
+    create_listener: EventListener,
+    join_show_button: Element,
+    join_show_listener: EventListener,
+    join_connect_button: Element,
+    join_connect_listener: EventListener,
+    copy_code_button: Element,
+    copy_code_listener: EventListener,
+    copy_link_button: Element,
+    copy_link_listener: EventListener,
+}
+
+impl OnlineMenu {
+    pub fn new(document: &Document) -> Self {
+        let create_panel = document.get_element_by_id("online-create-panel").unwrap();
+        let join_panel = document.get_element_by_id("online-join-panel").unwrap();
+        let room_code_display = document.get_element_by_id("online-room-code").unwrap();
+        let status = document.get_element_by_id("online-status").unwrap();
+        let join_input = document
+            .get_element_by_id("online-join-code-input")
+            .unwrap();
+
+        let create_button = document.get_element_by_id("button-ONLINE_CREATE").unwrap();
+        let create_listener = {
+            let create_panel = create_panel.clone();
+            let room_code_display = room_code_display.clone();
+            let status = status.clone();
+            EventListener::new(&create_button, "click", move |_e| {
+                let code = online::create_room();
+                room_code_display.set_text_content(Some(code.as_str()));
+                create_panel.remove_attribute("hidden").ok();
+                status.set_text_content(Some("Waiting for opponent..."));
+            })
+        };
+
+        let join_show_button = document
+            .get_element_by_id("button-ONLINE_JOIN_SHOW")
+            .unwrap();
+        let join_show_listener = {
+            let join_panel = join_panel.clone();
+            EventListener::new(&join_show_button, "click", move |_e| {
+                join_panel.remove_attribute("hidden").ok();
+            })
+        };
+
+        let join_connect_button = document
+            .get_element_by_id("button-ONLINE_JOIN_CONNECT")
+            .unwrap();
+        let join_connect_listener = {
+            let join_input = join_input.clone();
+            let status = status.clone();
+            EventListener::new(&join_connect_button, "click", move |_e| {
+                let code = join_input.dyn_ref::<HtmlInputElement>().unwrap().value();
+                online::join_room(code);
+                status.set_text_content(Some("Connecting..."));
+            })
+        };
+
+        let copy_code_button = document.get_element_by_id("button-COPY_CODE").unwrap();
+        let copy_code_listener = {
+            let room_code_display = room_code_display.clone();
+            EventListener::new(&copy_code_button, "click", move |_e| {
+                if let Some(code) = room_code_display.text_content() {
+                    online::copy_to_clipboard(code);
+                }
+            })
+        };
+
+        let copy_link_button = document.get_element_by_id("button-COPY_LINK").unwrap();
+        let copy_link_listener = {
+            let room_code_display = room_code_display.clone();
+            EventListener::new(&copy_link_button, "click", move |_e| {
+                if let Some(code) = room_code_display.text_content() {
+                    let location = web_sys::window().unwrap().location();
+                    let url = format!(
+                        "{}{}?room={}",
+                        location.origin().unwrap(),
+                        location.pathname().unwrap(),
+                        code
+                    );
+                    online::copy_to_clipboard(url);
+                }
+            })
+        };
+
+        // if the page was opened via a ?room=CODE link, jump straight to the
+        // join panel with the code pre-filled
+        if let Some(code) = online::room_code_from_url() {
+            join_input
+                .dyn_ref::<HtmlInputElement>()
+                .unwrap()
+                .set_value(code.as_str());
+            join_panel.remove_attribute("hidden").ok();
+        }
+
+        Self {
+            create_button,
+            create_listener,
+            join_show_button,
+            join_show_listener,
+            join_connect_button,
+            join_connect_listener,
+            copy_code_button,
+            copy_code_listener,
+            copy_link_button,
+            copy_link_listener,
         }
     }
 }

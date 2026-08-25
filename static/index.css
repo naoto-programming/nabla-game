@@ -203,3 +203,34 @@ label.card-count > input[type='number'] {
 	font-size: 1rem;
 	padding: 0.25rem;
 }
+
+#online-choice {
+	display: flex;
+	gap: 1em;
+	justify-content: center;
+}
+#online-room-code {
+	font-size: 2rem;
+	font-weight: bold;
+	letter-spacing: 0.2em;
+	text-align: center;
+}
+#online-join-code-input {
+	display: block;
+	margin: 1em auto;
+	font-size: 1.5rem;
+	letter-spacing: 0.2em;
+	text-align: center;
+	width: 8rem;
+	background-color: var(--color-light);
+	color: var(--color-dark);
+	border-width: 3px;
+	border-style: solid;
+	border-color: var(--color-dark);
+	border-radius: 5px;
+	padding: 0.25rem;
+}
+#online-status {
+	text-align: center;
+	margin-top: 1em;
+}

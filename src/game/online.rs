@@ -76,7 +76,6 @@ pub fn join_room(code: String) {
     unsafe { ONLINE_SESSION = Some(OnlineSession::new(2)) };
 }
 
-#[allow(dead_code)]
 pub fn leave_room() {
     js_leave_room();
     unsafe { ONLINE_SESSION = None };
