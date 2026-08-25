@@ -194,6 +194,15 @@ fn start_online_game(mut game: crate::game::structs::Game) {
     if let Some(menu) = unsafe { MENU.as_ref() } {
         menu.close();
     }
+    // card positions (which side each hand renders on) are normally only
+    // recalculated on window resize -- but which side is "local" now depends on
+    // ONLINE_SESSION.local_player_num, which didn't exist yet the last time that ran
+    // (page load, still GameState::MENU). Recompute now that both GAME.state and
+    // ONLINE_SESSION reflect the match that just started, or the joiner would see
+    // their own hand rendered on the wrong (far) side
+    if let Some(canvas) = unsafe { crate::CANVAS.as_mut() } {
+        canvas.resize();
+    }
     crate::render::render::draw();
 }
 

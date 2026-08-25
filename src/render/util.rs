@@ -9,9 +9,65 @@ use wasm_bindgen::prelude::*;
 use super::anim::AnimAttribute;
 // util imports
 use crate::util::get_key_val;
+// root imports
+use crate::GAME;
 
 pub static mut PLAYER_1_COLOUR: &str = "#FF0000";
 pub static mut PLAYER_2_COLOUR: &str = "#0000FF";
+
+/// true if `player_num`'s hand/field-half should render at the near (bottom) side of
+/// the screen for the local viewer. In local hotseat modes (PLAYVS/PLAYAI) this is
+/// always player 1 -- the existing fixed layout, since both players share one
+/// physical screen. In an online match each peer's own browser must show ITS OWN
+/// hand at the bottom regardless of whether it's player 1 (host) or player 2
+/// (joiner), since the two browsers are different screens rather than one shared,
+/// physically-flipped device.
+/// width, in px, below which the game switches to the narrow-portrait mobile layout
+/// (hand split into two rows) instead of the desktop single-row layout. Deliberately
+/// width-based rather than device/user-agent based -- it's the standard responsive
+/// approach and naturally covers phones in portrait (~360-430px wide) while leaving
+/// desktop and tablet/landscape widths on the unchanged PC layout
+pub const MOBILE_BREAKPOINT_PX: f64 = 700.0;
+
+/// true when the canvas is narrow-and-tall enough to warrant the mobile portrait
+/// layout (see MOBILE_BREAKPOINT_PX) -- the desktop layout is left completely
+/// unchanged whenever this is false
+pub fn is_mobile_layout(bounds_x: f64, bounds_y: f64) -> bool {
+    bounds_x < MOBILE_BREAKPOINT_PX && bounds_x < bounds_y
+}
+
+/// on mobile, the vertical gap reserved between a player's inner hand row and the
+/// field for that player's turn-action buttons (Cancel/Multidone/Confirm/
+/// TurnIndicator -- see pos::get_base_button_pos's mobile branch). A shared function
+/// so canvas.rs's sizing (hand zone height, scroll-fallback minimum height) and
+/// pos.rs's actual button placement can't drift out of sync with each other
+pub fn mobile_button_strip_height(player_card_height: f64, gutter: f64) -> f64 {
+    player_card_height * 0.3 + gutter * 0.5
+}
+
+/// total vertical space one side's hand occupies: a single row on desktop, or two
+/// stacked rows plus a reserved button strip on mobile (see
+/// pos::get_base_player_pos's mobile branch). Shared for the same reason as
+/// mobile_button_strip_height above
+pub fn hand_zone_height(is_mobile: bool, player_card_height: f64, gutter: f64) -> f64 {
+    if is_mobile {
+        player_card_height * 2.0 + gutter + mobile_button_strip_height(player_card_height, gutter)
+    } else {
+        player_card_height
+    }
+}
+
+pub fn player_renders_at_bottom(player_num: u32) -> bool {
+    let game = unsafe { GAME.as_ref() };
+    if let Some(game) = game {
+        if matches!(game.state, crate::game::structs::GameState::PLAYONLINE) {
+            if let Some(session) = unsafe { crate::game::online::ONLINE_SESSION.as_ref() } {
+                return player_num == session.local_player_num;
+            }
+        }
+    }
+    player_num == 1
+}
 
 #[wasm_bindgen(module = "/js/render.js")]
 extern "C" {

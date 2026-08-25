@@ -117,16 +117,30 @@ fn draw_button(id: RenderId, text: &str) {
         return;
     }
     let button = &canvas.render_items[&id];
+    let current_player = game.get_current_player_num();
+    let gutter = canvas.render_constants.button_sizes.gutter;
 
-    let gutter = button.w / 4.0;
-    let y = if game.get_current_player_num() == 1 {
-        canvas.canvas_bounds.y - gutter * 2.0 - button.h * 2.0 // buttom of canvas for p1
+    let y = if is_mobile_layout(canvas.canvas_bounds.x, canvas.canvas_bounds.y) {
+        // mobile places buttons side by side in the strip between the current
+        // player's inner hand row and the field, rather than stacked beside the hand
+        // (see pos::get_base_button_pos's mobile branch, which this must match)
+        let is_bottom = player_renders_at_bottom(current_player);
+        let inner_row = &canvas.render_items[&RenderId::from(format!("p{current_player}=0"))];
+        if is_bottom {
+            inner_row.y - gutter - button.h
+        } else {
+            inner_row.y + inner_row.h + gutter
+        }
     } else {
-        gutter // top of canvas for p2
-    } + if id == RenderId::Multidone || id == RenderId::Confirm {
-        button.h + gutter // bottom half of card for multidone/confirm
-    } else {
-        0.0
+        (if player_renders_at_bottom(current_player) {
+            canvas.canvas_bounds.y - gutter * 2.0 - button.h * 2.0 // bottom of canvas
+        } else {
+            gutter // top of canvas
+        }) + if id == RenderId::Multidone || id == RenderId::Confirm {
+            button.h + gutter // bottom half of card for multidone/confirm
+        } else {
+            0.0
+        }
     };
 
     draw_rect(button.x, y, button.w, button.h, button.r, id.to_string());
@@ -149,7 +163,9 @@ fn draw_deck(id: RenderId) {
     draw_rect(deck.x, deck.y, deck.w, deck.h, deck.r, id.to_string());
 
     let context = &mut canvas.context;
-    context.set_font("40px KaTeX_Main");
+    // proportional to the deck card's own height rather than a fixed size, since
+    // mobile's deck card (in the button strip) is much smaller than desktop's
+    context.set_font(&format!("{}px KaTeX_Main", (deck.h * 0.4).min(40.0)));
     context.set_text_baseline("middle");
     context.set_text_align("center");
     context

@@ -114,6 +114,7 @@ impl Canvas {
     /// recalculate canvas element sizes on resize
     pub fn resize(&mut self) {
         let window = web_sys::window().unwrap();
+        let document = window.document().unwrap();
         let inner_width = window.inner_width().unwrap().as_f64().unwrap() as u32;
         let inner_height = window.inner_height().unwrap().as_f64().unwrap() as u32;
 
@@ -124,7 +125,53 @@ impl Canvas {
 
         self.rebounds();
         self.update_render_constants();
+
+        // if the current layout needs more vertical room than the viewport actually
+        // has (eg. a short window, or mobile with its taller two-row hand layout),
+        // grow the canvas to fit everything at a usable size instead of squeezing
+        // cards down indefinitely -- the page then scrolls to reach the rest, rather
+        // than clipping or overlapping content
+        let required_height = self.required_canvas_height();
+        if required_height > self.canvas_bounds.y {
+            let grown_height = required_height.ceil() as u32;
+            self.canvas_element.set_height(grown_height);
+            self.hit_canvas_element.set_height(grown_height);
+            self.rebounds();
+        }
+
+        // CSS alone can't know the canvas's own computed pixel height, so the
+        // scrollable body's min-height is driven from here directly
+        if let Some(body) = document.body() {
+            body.style()
+                .set_property("min-height", &format!("{}px", self.canvas_bounds.y))
+                .ok();
+        }
+
         self.calculate_render_positions();
+    }
+
+    /// the total vertical space the current layout needs to render every element
+    /// without overlap, at the sizes update_render_constants just computed -- see
+    /// resize's scroll-fallback comment for why this matters
+    fn required_canvas_height(&self) -> f64 {
+        let Sizes {
+            height: player_card_height,
+            gutter: player_card_gutter,
+            ..
+        } = self.render_constants.player_sizes;
+        let Sizes {
+            height: field_basis_height,
+            gutter: field_basis_gutter,
+            ..
+        } = self.render_constants.field_sizes;
+
+        let is_mobile = is_mobile_layout(self.canvas_bounds.x, self.canvas_bounds.y);
+        let hand_zone = hand_zone_height(is_mobile, player_card_height, player_card_gutter);
+
+        hand_zone * 2.0 // both players' hand zones
+            + player_card_gutter * 2.0 // edge margins around each hand zone
+            + field_basis_height * 2.0 // the field's own two rows
+            + field_basis_gutter * 3.0 // gutters around/between the field rows
     }
 
     /// recalculate canvas bounds and center on resize
@@ -145,18 +192,32 @@ impl Canvas {
 
     /// update sizes for player cards and field bases
     fn update_render_constants(&mut self) {
-        let player_card_height = rem_to_px(String::from("9rem"));
-        let player_card_width = player_card_height * 0.75;
+        let is_mobile = is_mobile_layout(self.canvas_bounds.x, self.canvas_bounds.y);
+
+        // mobile splits the 7-card hand into two rows (3 inner + 4 outer) instead of
+        // one row of 7 (see pos::get_base_player_pos), so cards are sized to fit the
+        // wider of the two rows -- 4 across -- rather than 7 across; desktop is
+        // completely unchanged (still a fixed 9rem card height)
+        let (player_card_width, player_card_height) = if is_mobile {
+            let available_width = self.canvas_bounds.x * 0.94;
+            // 4 cards + 3 gutters, gutter = width/4 => 4w + 3(w/4) = 4.75w
+            let width = (available_width / 4.75).clamp(48.0, 90.0);
+            (width, width / 0.75)
+        } else {
+            let height = rem_to_px(String::from("9rem"));
+            (height * 0.75, height)
+        };
         let gutter = player_card_width / 4.0;
         let radius = gutter / 4.0;
 
-        // TODO: add balancing and min sizes for smaller screens
+        let hand_zone = hand_zone_height(is_mobile, player_card_height, gutter);
+
         let field_gutter = gutter * 2.0;
         let field_basis_height = min(
-            (self.canvas_bounds.y - player_card_height * 2.0 - gutter * 2.0 - field_gutter * 3.0)
-                / 2.0, // distance from edge of player to center
+            (self.canvas_bounds.y - hand_zone * 2.0 - gutter * 2.0 - field_gutter * 3.0) / 2.0, // distance from edge of player to center
             player_card_height * 2.0,
-        );
+        )
+        .max(if is_mobile { 40.0 } else { 0.0 }); // never collapse to nothing on mobile; resize's scroll-fallback grows the canvas instead
         let field_basis_width = field_basis_height * 0.75;
         let field_radius = field_gutter / 4.0;
 
@@ -174,8 +235,20 @@ impl Canvas {
                 radius,
             },
             button_sizes: Sizes {
-                width: player_card_width,
-                height: (player_card_height - gutter) / 2.0,
+                width: if is_mobile {
+                    player_card_width * 0.6
+                } else {
+                    player_card_width
+                },
+                height: if is_mobile {
+                    // fit comfortably within the strip reserved for it (see
+                    // mobile_button_strip_height, used both here and by
+                    // hand_zone_height above) rather than an independently-tuned
+                    // number that could silently drift out of sync with it
+                    mobile_button_strip_height(player_card_height, gutter) * 0.75
+                } else {
+                    (player_card_height - gutter) / 2.0
+                },
                 gutter,
                 radius: radius / 2.0,
             },

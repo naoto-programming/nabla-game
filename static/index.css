@@ -7,7 +7,11 @@ html,
 body {
 	width: 100%;
 	height: 100%;
-	overflow: hidden;
+	overflow-x: hidden;
+	/* canvas.rs's resize() grows the canvas taller than the viewport when the
+	   current layout needs more room than is available (eg. mobile's two-row hand) --
+	   this lets the page scroll to reach the rest instead of squashing everything */
+	overflow-y: auto;
 }
 
 body {
@@ -18,23 +22,34 @@ body * {
 	font-family: 'KaTeX_Main', 'Helvetica Neue';
 }
 
-#canvas,
-#hitCanvas {
-	width: 100%;
-	height: 100%;
-}
-
+/* no width/height here: the canvas elements size themselves from their width/height
+   attributes (set in canvas.rs), not from CSS -- percentage sizing here would just
+   stretch/squash the drawing buffer back to the viewport regardless of how tall
+   resize() actually made it */
 #canvas {
+	display: block;
 	z-index: 1;
 }
 
+/* absolute, not the plain `display: block` above: #hitCanvas is a hit-testing
+   buffer only, toggled by its `hidden` attribute -- an ID rule here would win
+   specificity over the browser's default `[hidden] { display: none }` and make it
+   visible again, occupying its own extra block of page height alongside #canvas.
+   Taking it out of flow entirely means that mistake can't silently double the page
+   height again regardless of its hidden/display state */
 #hitCanvas {
+	position: absolute;
+	left: 0;
+	top: 0;
 	z-index: 0;
 }
 
 #katex {
 	pointer-events: none;
-	position: fixed;
+	/* absolute (not fixed): katex items are positioned to match specific canvas pixel
+	   coordinates, so this needs to scroll together with the canvas, not stay pinned
+	   to the viewport while the canvas content scrolls out from under it */
+	position: absolute;
 	left: 0;
 	top: 0;
 	width: 100%;

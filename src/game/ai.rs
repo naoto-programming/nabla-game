@@ -7,7 +7,7 @@ use rand::Rng;
 use crate::basis::structs::*;
 use crate::events::mousedown_handler::{branch_turn_phase, next_turn};
 use crate::game::cards::*;
-use crate::game::field::Field;
+use crate::game::field::{Field, FieldBasis};
 use crate::game::structs::*;
 use crate::math::derivative::derivative;
 use crate::render::util::RenderId;
@@ -48,10 +48,13 @@ impl Display for AiDifficulty {
     }
 }
 
-/// one candidate move: the click sequence that plays it, and its heuristic score
+/// one candidate move: the click sequence that plays it, its immediate heuristic
+/// score, and the field it would leave behind (used to look one ply ahead at the
+/// opponent's best reply -- see apply_lookahead)
 struct AiMove {
     clicks: Vec<RenderId>,
     score: f64,
+    resulting_field: Field,
 }
 
 /// if it's now the AI's turn in a PLAYAI game, schedules its move after a short
@@ -65,7 +68,9 @@ pub fn maybe_take_ai_turn() {
 }
 
 fn take_ai_turn() {
-    let candidates = generate_candidates();
+    let game = unsafe { GAME.as_ref().unwrap() };
+    let candidates =
+        generate_candidates_for(AI_PLAYER_NUM, &game.player_2, &game.field, game.turn.number);
     if candidates.is_empty() {
         // no legal move within the set the AI can evaluate (eg. hand is entirely
         // basis cards with no empty field slot to play them into). A human in this
@@ -78,7 +83,7 @@ fn take_ai_turn() {
     }
 
     let difficulty = unsafe { AI_DIFFICULTY };
-    let chosen = choose_move(candidates, difficulty);
+    let chosen = choose_move(candidates, difficulty, game.turn.number);
     for id in chosen.clicks {
         // call the turn-phase logic directly (bypassing handle_mousedown) so the AI's
         // clicks don't also toggle the human-facing card-overflow expand/collapse state
@@ -101,13 +106,23 @@ fn basis_size(basis: &Basis) -> u32 {
     }
 }
 
-/// scores replacing `field[target]` with `new_basis`: rewards clearing/simplifying an
-/// opponent slot (progress toward winning), penalises clearing the AI's own slot
-fn score_replacement(target: usize, new_basis: &Basis, field: &Field) -> f64 {
-    // slots 0-2 render in player 2's colour and losing them empty is what makes
-    // player 2 lose (see next_turn's win check) -- ie. 0-2 is the AI's OWN side,
-    // and 3-5 (rendered in player 1's colour) is the human opponent's side
-    let is_opponent_side = target >= 3;
+/// which player's colour field slot `target` renders in (see draw() in render.rs) --
+/// slots 0-2 are player 2's, 3-5 are player 1's
+fn field_owner(target: usize) -> u32 {
+    if target < 3 {
+        2
+    } else {
+        1
+    }
+}
+
+/// scores replacing `field[target]` with `new_basis`, from `evaluating_player`'s
+/// point of view: rewards clearing/simplifying the OTHER player's slot (progress
+/// toward winning), penalises clearing evaluating_player's own slot. Reused both to
+/// score the AI's own candidates (evaluating_player = AI_PLAYER_NUM) and to predict
+/// the human's best reply one ply ahead (evaluating_player = 1) -- see apply_lookahead
+fn score_replacement(evaluating_player: u32, target: usize, new_basis: &Basis, field: &Field) -> f64 {
+    let is_opponent_side = field_owner(target) != evaluating_player;
     let old_size = field[target].basis.as_ref().map(basis_size).unwrap_or(0);
     let new_size = if new_basis.is_num(0) {
         0
@@ -132,38 +147,68 @@ fn score_replacement(target: usize, new_basis: &Basis, field: &Field) -> f64 {
     score
 }
 
-/// scores a Nabla/Laplacian play across all 3 slots of the targeted half
-fn score_half(half_start: usize, is_laplacian: bool, field: &Field) -> f64 {
+/// scores a Nabla/Laplacian play across all 3 slots of the targeted half, from
+/// `evaluating_player`'s point of view (see score_replacement)
+fn score_half(evaluating_player: u32, half_start: usize, is_laplacian: bool, field: &Field) -> f64 {
     (half_start..half_start + 3)
         .filter_map(|i| field[i].basis.as_ref().map(|basis| (i, basis)))
         .map(|(i, basis)| {
             let once = derivative(basis);
             let result = if is_laplacian { derivative(&once) } else { once };
-            score_replacement(i, &result, field)
+            score_replacement(evaluating_player, i, &result, field)
         })
         .sum()
 }
 
-/// enumerates legal moves the AI knows how to evaluate. Mult/Div are restricted to
-/// pairs of field bases (skipping hand-basis operands and 3+-way combinations) to
-/// keep the search small; every other card type is fully covered
-fn generate_candidates() -> Vec<AiMove> {
-    let game = unsafe { GAME.as_ref().unwrap() };
-    let hand = &game.player_2;
-    let field = &game.field;
+/// applies a Nabla/Laplacian half-field derivative to a cloned field, mirroring
+/// handle_derivative_card's non-history-shortcut path. Used only to build a
+/// candidate's resulting_field for lookahead purposes -- a reasonable approximation
+/// for ranking candidates, since the AI's actual chosen move is always executed
+/// afterward through the real branch_turn_phase pipeline, which handles the history
+/// shortcut correctly regardless of what this function computed
+fn apply_half_to_field(half_start: usize, is_laplacian: bool, field: &Field) -> Field {
+    let mut new_field = field.clone();
+    for i in half_start..half_start + 3 {
+        if let Some(basis) = field[i].basis.clone() {
+            let once = derivative(&basis);
+            let result = if is_laplacian { derivative(&once) } else { once };
+            new_field[i] = if result.is_num(0) {
+                FieldBasis::none()
+            } else {
+                FieldBasis::new(&result)
+            };
+        }
+    }
+    new_field
+}
+
+/// enumerates legal moves `player_num` knows how to evaluate from `hand` against
+/// `field`, generalized so the same logic can score the AI's own candidates and
+/// predict the opponent's best reply one ply ahead (see apply_lookahead). Mult/Div
+/// are restricted to pairs of field bases (skipping hand-basis operands and 3+-way
+/// combinations) to keep the search small; every other card type is fully covered
+fn generate_candidates_for(
+    player_num: u32,
+    hand: &[Card],
+    field: &Field,
+    turn_number: u32,
+) -> Vec<AiMove> {
     let mut moves = vec![];
 
     for (i, card) in hand.iter().enumerate() {
-        let hand_id = RenderId::from(format!("p2={}", i));
+        let hand_id = RenderId::from(format!("p{player_num}={i}"));
 
         match card {
             Card::BasisCard(basis_card) if !matches!(basis_card, BasisCard::Zero) => {
                 for target in 0..6 {
                     if field[target].basis.is_none() {
                         let new_basis = Basis::from(*basis_card);
+                        let mut resulting_field = field.clone();
+                        resulting_field[target] = FieldBasis::new(&new_basis);
                         moves.push(AiMove {
-                            clicks: vec![hand_id, RenderId::from(format!("f={}", target))],
-                            score: score_replacement(target, &new_basis, field),
+                            clicks: vec![hand_id, RenderId::from(format!("f={target}"))],
+                            score: score_replacement(player_num, target, &new_basis, field),
+                            resulting_field,
                         });
                     }
                 }
@@ -171,16 +216,18 @@ fn generate_candidates() -> Vec<AiMove> {
             Card::DerivativeCard(DerivativeCard::Nabla) => {
                 for half_start in [0usize, 3usize] {
                     moves.push(AiMove {
-                        clicks: vec![hand_id, RenderId::from(format!("f={}", half_start))],
-                        score: score_half(half_start, false, field),
+                        clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
+                        score: score_half(player_num, half_start, false, field),
+                        resulting_field: apply_half_to_field(half_start, false, field),
                     });
                 }
             }
-            Card::DerivativeCard(DerivativeCard::Laplacian) if game.turn.number >= 2 => {
+            Card::DerivativeCard(DerivativeCard::Laplacian) if turn_number >= 2 => {
                 for half_start in [0usize, 3usize] {
                     moves.push(AiMove {
-                        clicks: vec![hand_id, RenderId::from(format!("f={}", half_start))],
-                        score: score_half(half_start, true, field),
+                        clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
+                        score: score_half(player_num, half_start, true, field),
+                        resulting_field: apply_half_to_field(half_start, true, field),
                     });
                 }
             }
@@ -199,17 +246,25 @@ fn generate_candidates() -> Vec<AiMove> {
                         // non-zero) then goes back into `a` -- `b` is always lost, so
                         // it must be scored too, or the AI can't see that it's
                         // sacrificing (say) its own slot to simplify an opponent's
-                        let score = score_replacement(a, &result, field)
-                            + score_replacement(b, &Basis::from(0), field)
+                        let score = score_replacement(player_num, a, &result, field)
+                            + score_replacement(player_num, b, &Basis::from(0), field)
                             - 1.0; // drop the double-counted baseline from scoring twice
+                        let mut resulting_field = field.clone();
+                        resulting_field[b] = FieldBasis::none();
+                        resulting_field[a] = if result.is_num(0) {
+                            FieldBasis::none()
+                        } else {
+                            FieldBasis::new(&result)
+                        };
                         moves.push(AiMove {
                             clicks: vec![
                                 hand_id,
-                                RenderId::from(format!("f={}", a)),
-                                RenderId::from(format!("f={}", b)),
+                                RenderId::from(format!("f={a}")),
+                                RenderId::from(format!("f={b}")),
                                 RenderId::Multidone,
                             ],
                             score,
+                            resulting_field,
                         });
                     }
                 }
@@ -222,9 +277,16 @@ fn generate_candidates() -> Vec<AiMove> {
                 for target in 0..6 {
                     if let Some(basis) = &field[target].basis {
                         let result = apply_card(card)(basis);
+                        let mut resulting_field = field.clone();
+                        resulting_field[target] = if result.is_num(0) {
+                            FieldBasis::none()
+                        } else {
+                            FieldBasis::new(&result)
+                        };
                         moves.push(AiMove {
-                            clicks: vec![hand_id, RenderId::from(format!("f={}", target))],
-                            score: score_replacement(target, &result, field),
+                            clicks: vec![hand_id, RenderId::from(format!("f={target}"))],
+                            score: score_replacement(player_num, target, &result, field),
+                            resulting_field,
                         });
                     }
                 }
@@ -236,9 +298,59 @@ fn generate_candidates() -> Vec<AiMove> {
     moves
 }
 
-/// difficulty-scaled selection: Hard always takes the best-scored move, Medium picks
-/// randomly from a shrinking top slice, Easy is mostly random with occasional sense
-fn choose_move(mut candidates: Vec<AiMove>, difficulty: AiDifficulty) -> AiMove {
+/// the single best immediate score `player_num` could achieve against `field` with
+/// `hand` -- used to estimate how dangerous a position is for whoever's left
+/// occupying it (ie. the opponent's best reply after one of the AI's candidate
+/// moves). 0.0 (neutral) if they'd have no legal move to evaluate at all, since being
+/// stuck isn't scored as a loss by this heuristic (see take_ai_turn's own forfeit
+/// handling for the AI's symmetric case)
+fn best_reply_score(player_num: u32, hand: &[Card], field: &Field, turn_number: u32) -> f64 {
+    generate_candidates_for(player_num, hand, field, turn_number)
+        .iter()
+        .map(|mv| mv.score)
+        .fold(f64::MIN, f64::max)
+        .max(0.0)
+}
+
+/// how many of the AI's top-scored candidates get the (more expensive) opponent
+/// lookahead applied -- bounds the O(pool * opponent_candidates) search so a turn
+/// with many candidates (eg. several Mult/Div cards in hand) still resolves quickly.
+/// Candidates outside this pool were already meaningfully worse by immediate score,
+/// so skipping their lookahead is an acceptable approximation
+const LOOKAHEAD_POOL: usize = 15;
+/// how heavily the opponent's best reply weighs against the AI's own immediate gain
+/// when ranking moves -- tuned so a move that hands the opponent a big reply is
+/// usually worse than a smaller move that doesn't, without completely overriding a
+/// large enough immediate gain
+const LOOKAHEAD_WEIGHT: f64 = 0.75;
+
+/// re-ranks the AI's best candidates by subtracting a weighted estimate of the
+/// human's best reply one ply ahead, so the AI stops walking into moves that look
+/// good immediately but hand the opponent an even better follow-up (eg. clearing an
+/// opponent slot while leaving one of its own exposed to an easy kill next turn --
+/// the original one-ply-only heuristic couldn't see this at all)
+fn apply_lookahead(mut candidates: Vec<AiMove>, turn_number: u32) -> Vec<AiMove> {
+    let game = unsafe { GAME.as_ref().unwrap() };
+    let opponent_hand = &game.player_1;
+
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    for mv in candidates.iter_mut().take(LOOKAHEAD_POOL) {
+        let reply = best_reply_score(1, opponent_hand, &mv.resulting_field, turn_number + 1);
+        mv.score -= LOOKAHEAD_WEIGHT * reply;
+    }
+    candidates
+}
+
+/// difficulty-scaled selection: Hard and Medium both look one ply ahead (see
+/// apply_lookahead) before ranking -- Hard always takes the best-adjusted move
+/// (strong enough that walking into a bad trade is rare), Medium picks randomly from
+/// a shrinking top slice of the adjusted ranking. Easy skips lookahead entirely and
+/// stays mostly random, so it remains reliably beatable
+fn choose_move(candidates: Vec<AiMove>, difficulty: AiDifficulty, turn_number: u32) -> AiMove {
+    let mut candidates = match difficulty {
+        AiDifficulty::Hard | AiDifficulty::Medium => apply_lookahead(candidates, turn_number),
+        AiDifficulty::Easy => candidates,
+    };
     candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
     let mut rng = rand::thread_rng();
 

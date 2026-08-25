@@ -52,6 +52,8 @@ features = [
   # "AudioDestinationNode",
   "Document",
   "Element",
+  "HtmlElement",
+  "CssStyleDeclaration",
   "HtmlCanvasElement",
   "HtmlImageElement",
   "HtmlCollection",
