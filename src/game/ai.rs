@@ -49,12 +49,52 @@ impl Display for AiDifficulty {
 }
 
 /// one candidate move: the click sequence that plays it, its immediate heuristic
-/// score, and the field it would leave behind (used to look one ply ahead at the
-/// opponent's best reply -- see apply_lookahead)
+/// score, the field it would leave behind (used to look one ply ahead at the
+/// opponent's best reply -- see apply_lookahead), and whether it wins outright
 struct AiMove {
     clicks: Vec<RenderId>,
     score: f64,
     resulting_field: Field,
+    /// true if this move empties every slot belonging to the *other* player --
+    /// the actual game-over condition (see side_is_cleared) -- ie. this move wins
+    /// the game immediately, regardless of what the heuristic score says
+    wins_immediately: bool,
+}
+
+fn opponent_of(player_num: u32) -> u32 {
+    if player_num == 1 {
+        2
+    } else {
+        1
+    }
+}
+
+/// the 3 field slots belonging to `owner` (see field_owner)
+fn owned_slots(owner: u32) -> [usize; 3] {
+    if owner == 2 {
+        [0, 1, 2]
+    } else {
+        [3, 4, 5]
+    }
+}
+
+/// true if every slot belonging to `owner` is empty -- the actual win/loss
+/// condition (see next_turn in events/mousedown_handler.rs): whoever's own side
+/// empties out loses, the other player wins
+fn side_is_cleared(field: &Field, owner: u32) -> bool {
+    owned_slots(owner).iter().all(|&i| field[i].basis.is_none())
+}
+
+/// true if `player_num` has ANY legal move that would win immediately against
+/// `field` with `hand`. Deliberately exhaustive (always searches Mult/Div, unlike
+/// best_reply_score's cheap danger estimate) -- this feeds the highest-priority
+/// checks (an immediate win, or an immediate loss to avoid), where missing a
+/// winning Mult/Div combination would be a real correctness bug, not just an
+/// acceptable approximation
+fn has_winning_move(player_num: u32, hand: &[Card], field: &Field, turn_number: u32) -> bool {
+    generate_candidates_for(player_num, hand, field, turn_number, true)
+        .iter()
+        .any(|mv| mv.wins_immediately)
 }
 
 /// if it's now the AI's turn in a PLAYAI game, schedules its move after a short
@@ -90,7 +130,7 @@ fn take_ai_turn() {
     }
 
     let difficulty = unsafe { AI_DIFFICULTY };
-    let chosen = choose_move(candidates, difficulty, game.turn.number);
+    let chosen = choose_move(candidates, &game.player_1, difficulty, game.turn.number);
     for id in chosen.clicks {
         // call the turn-phase logic directly (bypassing handle_mousedown) so the AI's
         // clicks don't also toggle the human-facing card-overflow expand/collapse state
@@ -220,29 +260,40 @@ fn generate_candidates_for(
                         let new_basis = Basis::from(*basis_card);
                         let mut resulting_field = field.clone();
                         resulting_field[target] = FieldBasis::new(&new_basis);
+                        let wins_immediately =
+                            side_is_cleared(&resulting_field, opponent_of(player_num));
                         moves.push(AiMove {
                             clicks: vec![hand_id, RenderId::from(format!("f={target}"))],
                             score: score_replacement(player_num, target, &new_basis, field),
                             resulting_field,
+                            wins_immediately,
                         });
                     }
                 }
             }
             Card::DerivativeCard(DerivativeCard::Nabla) => {
                 for half_start in [0usize, 3usize] {
+                    let resulting_field = apply_half_to_field(half_start, false, field);
+                    let wins_immediately =
+                        side_is_cleared(&resulting_field, opponent_of(player_num));
                     moves.push(AiMove {
                         clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
                         score: score_half(player_num, half_start, false, field),
-                        resulting_field: apply_half_to_field(half_start, false, field),
+                        resulting_field,
+                        wins_immediately,
                     });
                 }
             }
             Card::DerivativeCard(DerivativeCard::Laplacian) if turn_number >= 2 => {
                 for half_start in [0usize, 3usize] {
+                    let resulting_field = apply_half_to_field(half_start, true, field);
+                    let wins_immediately =
+                        side_is_cleared(&resulting_field, opponent_of(player_num));
                     moves.push(AiMove {
                         clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
                         score: score_half(player_num, half_start, true, field),
-                        resulting_field: apply_half_to_field(half_start, true, field),
+                        resulting_field,
+                        wins_immediately,
                     });
                 }
             }
@@ -271,6 +322,8 @@ fn generate_candidates_for(
                         } else {
                             FieldBasis::new(&result)
                         };
+                        let wins_immediately =
+                            side_is_cleared(&resulting_field, opponent_of(player_num));
                         moves.push(AiMove {
                             clicks: vec![
                                 hand_id,
@@ -280,6 +333,7 @@ fn generate_candidates_for(
                             ],
                             score,
                             resulting_field,
+                            wins_immediately,
                         });
                     }
                 }
@@ -298,10 +352,13 @@ fn generate_candidates_for(
                         } else {
                             FieldBasis::new(&result)
                         };
+                        let wins_immediately =
+                            side_is_cleared(&resulting_field, opponent_of(player_num));
                         moves.push(AiMove {
                             clicks: vec![hand_id, RenderId::from(format!("f={target}"))],
                             score: score_replacement(player_num, target, &result, field),
                             resulting_field,
+                            wins_immediately,
                         });
                     }
                 }
@@ -329,6 +386,37 @@ fn best_reply_score(player_num: u32, hand: &[Card], field: &Field, turn_number: 
         .max(0.0)
 }
 
+/// removes candidates that would let the opponent win outright on their very next
+/// turn, unless EVERY candidate shares that fate (in which case the loss is
+/// unavoidable regardless of what's picked, so there's nothing safe to filter down
+/// to -- normal scoring proceeds among the doomed options instead, eg. to at least
+/// maximise damage before losing). Exhaustive (Mult/Div included, via
+/// has_winning_move) since missing a lethal reply here would be a real correctness
+/// bug, not an acceptable approximation. This is priority tier 2 ("prevent the
+/// opponent's immediate win") -- applied for every difficulty, before any of the
+/// softer, difficulty-scaled scoring below, since walking into an avoidable loss
+/// isn't a "weaker style of play", it's just a mistake
+fn filter_out_losing_moves(
+    candidates: Vec<AiMove>,
+    opponent_hand: &[Card],
+    turn_number: u32,
+) -> Vec<AiMove> {
+    let is_safe: Vec<bool> = candidates
+        .iter()
+        .map(|mv| !has_winning_move(1, opponent_hand, &mv.resulting_field, turn_number + 1))
+        .collect();
+
+    if is_safe.iter().any(|&safe| safe) {
+        candidates
+            .into_iter()
+            .zip(is_safe)
+            .filter_map(|(mv, safe)| safe.then_some(mv))
+            .collect()
+    } else {
+        candidates
+    }
+}
+
 /// how many of the AI's top-scored candidates get the (more expensive) opponent
 /// lookahead applied on Medium -- bounds the search since Medium doesn't need to be
 /// perfect, just reasonably aware. Hard uses usize::MAX (every candidate) instead:
@@ -351,10 +439,12 @@ const LOOKAHEAD_WEIGHT: f64 = 0.75;
 /// even better follow-up (eg. clearing an opponent slot while leaving one of its own
 /// exposed to an easy kill next turn -- the original one-ply-only heuristic couldn't
 /// see this at all)
-fn apply_lookahead(mut candidates: Vec<AiMove>, turn_number: u32, pool: usize) -> Vec<AiMove> {
-    let game = unsafe { GAME.as_ref().unwrap() };
-    let opponent_hand = &game.player_1;
-
+fn apply_lookahead(
+    mut candidates: Vec<AiMove>,
+    opponent_hand: &[Card],
+    turn_number: u32,
+    pool: usize,
+) -> Vec<AiMove> {
     candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
     for mv in candidates.iter_mut().take(pool) {
         let reply = best_reply_score(1, opponent_hand, &mv.resulting_field, turn_number + 1);
@@ -363,16 +453,68 @@ fn apply_lookahead(mut candidates: Vec<AiMove>, turn_number: u32, pool: usize) -
     candidates
 }
 
-/// difficulty-scaled selection: Hard looks one ply ahead across *every* candidate
-/// (see apply_lookahead's doc on why a pool isn't safe here) and always takes the
-/// best-adjusted move. Medium also looks ahead, but only across its top
-/// MEDIUM_LOOKAHEAD_POOL candidates, and picks randomly from a shrinking top slice
-/// of that adjusted ranking -- reasonably aware, not required to be perfect. Easy
-/// skips lookahead entirely and stays mostly random, so it remains reliably beatable
-fn choose_move(candidates: Vec<AiMove>, difficulty: AiDifficulty, turn_number: u32) -> AiMove {
+/// removes candidates that would immediately end the game in the AI's own defeat
+/// (clearing every slot the AI owns), unless EVERY candidate does this (nothing left
+/// to filter down to). Checked before even tier 1 (an immediate win): in the rare
+/// case a single Mult/Div move clears an opponent slot AND the AI's own last slot at
+/// once, next_turn's win check (see side_is_cleared) tests the *mover's own* side
+/// first, so that move is a loss regardless of what it also did to the opponent's
+/// side. Previously this was only discouraged via score_replacement's fixed -50
+/// penalty for clearing an own slot, which a large enough simultaneous
+/// opponent-clear bonus (+100) could outweigh -- letting the AI choose a move that
+/// looked good on net score but instantly lost the game by its own hand. That's a
+/// hard rule, not a soft preference, so it's a filter here, not a score adjustment
+fn filter_out_self_defeating_moves(candidates: Vec<AiMove>) -> Vec<AiMove> {
+    let is_safe: Vec<bool> = candidates
+        .iter()
+        .map(|mv| !side_is_cleared(&mv.resulting_field, AI_PLAYER_NUM))
+        .collect();
+
+    if is_safe.iter().any(|&safe| safe) {
+        candidates
+            .into_iter()
+            .zip(is_safe)
+            .filter_map(|(mv, safe)| safe.then_some(mv))
+            .collect()
+    } else {
+        candidates
+    }
+}
+
+/// difficulty-scaled selection, applying priority tiers roughly highest-to-lowest:
+/// (1) an immediate win is always taken outright, for every difficulty -- see
+/// wins_immediately; (2) an immediate loss is always avoided if any alternative
+/// exists, for every difficulty -- see filter_out_losing_moves; (3+) among what's
+/// left, Hard looks one ply ahead across *every* remaining candidate (see
+/// apply_lookahead's doc on why a pool isn't safe here) and always takes the
+/// best-adjusted move, Medium looks ahead too but only across its top
+/// MEDIUM_LOOKAHEAD_POOL candidates and picks randomly from a shrinking top slice of
+/// that adjusted ranking (reasonably aware, not required to be perfect), and Easy
+/// skips lookahead entirely and stays mostly random so it remains reliably beatable
+fn choose_move(
+    candidates: Vec<AiMove>,
+    opponent_hand: &[Card],
+    difficulty: AiDifficulty,
+    turn_number: u32,
+) -> AiMove {
+    // tier 0 (implicit, checked first): never choose a move that instantly ends the
+    // game in the AI's own defeat, if any alternative exists
+    let candidates = filter_out_self_defeating_moves(candidates);
+
+    // tier 1: never pass up a move that wins outright, regardless of difficulty
+    if let Some(winning_index) = candidates.iter().position(|mv| mv.wins_immediately) {
+        let mut candidates = candidates;
+        return candidates.remove(winning_index);
+    }
+
+    // tier 2: never hand the opponent a win next turn if there's any alternative
+    let candidates = filter_out_losing_moves(candidates, opponent_hand, turn_number);
+
     let mut candidates = match difficulty {
-        AiDifficulty::Hard => apply_lookahead(candidates, turn_number, usize::MAX),
-        AiDifficulty::Medium => apply_lookahead(candidates, turn_number, MEDIUM_LOOKAHEAD_POOL),
+        AiDifficulty::Hard => apply_lookahead(candidates, opponent_hand, turn_number, usize::MAX),
+        AiDifficulty::Medium => {
+            apply_lookahead(candidates, opponent_hand, turn_number, MEDIUM_LOOKAHEAD_POOL)
+        }
         AiDifficulty::Easy => candidates,
     };
     candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
@@ -399,7 +541,6 @@ fn choose_move(candidates: Vec<AiMove>, difficulty: AiDifficulty, turn_number: u
 #[cfg(test)]
 mod perf_tests {
     use super::*;
-    use crate::game::structs::Game;
 
     /// stacks the hand with the single most expensive card type (Mult/Div, up to 30
     /// pair-combinations each) to stress the search as hard as realistically possible
@@ -441,18 +582,11 @@ mod perf_tests {
         let ai_hand = worst_case_hand();
         let opponent_hand = worst_case_hand();
 
-        let mut game = Game::new();
-        game.field = field.clone();
-        game.player_1 = opponent_hand;
-        game.player_2 = ai_hand.clone();
-        game.turn.number = 4;
-        unsafe { crate::GAME = Some(game) };
-
         let start = std::time::Instant::now();
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4, true);
         assert!(!candidates.is_empty(), "worst-case hand should still have legal moves");
         let candidate_count = candidates.len();
-        let chosen = choose_move(candidates, AiDifficulty::Hard, 4);
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4);
         let elapsed = start.elapsed();
 
         println!(
@@ -465,6 +599,111 @@ mod perf_tests {
             elapsed.as_millis() < 3000,
             "AI decision took {:?} against a worst-case hand -- too slow, risks looking frozen",
             elapsed
+        );
+    }
+
+    /// priority tier 1: a move that wins outright must always be taken, even when
+    /// another candidate (that doesn't win) is also on offer
+    #[test]
+    fn test_ai_takes_immediate_win_over_other_options() {
+        // Field::new() starts every slot occupied (the game's real starting
+        // layout) -- slots meant to be empty must be cleared explicitly
+        let mut field = Field::new();
+        field[3] = FieldBasis::none();
+        field[4] = FieldBasis::none();
+        // field[5] is the opponent's last remaining slot -- derivative(1) = 0
+        // clears it, winning outright
+        field[5] = FieldBasis::new(&Basis::from(1));
+
+        let ai_hand = vec![
+            Card::AlgebraicCard(AlgebraicCard::Sqrt), // decoy: doesn't win
+            Card::DerivativeCard(DerivativeCard::Derivative), // wins if aimed at field[5]
+        ];
+        let opponent_hand = vec![Card::BasisCard(BasisCard::X)];
+
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4, true);
+        assert!(
+            candidates.iter().any(|mv| mv.wins_immediately),
+            "test setup is wrong: no winning candidate was generated at all"
+        );
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4);
+
+        assert!(
+            chosen.wins_immediately,
+            "AI had a winning move available but chose a different one instead"
+        );
+    }
+
+    /// priority tier 2: never leave the opponent an immediate winning reply when a
+    /// safe alternative exists, even if the unsafe move's own immediate score looks
+    /// more attractive
+    #[test]
+    fn test_ai_avoids_immediate_loss_when_a_safe_alternative_exists() {
+        // Field::new() starts every slot occupied -- slots meant to be empty must
+        // be cleared explicitly
+        let mut field = Field::new();
+        // AI's only remaining own slot: "1" -- the opponent's Derivative card would
+        // zero this (an immediate win for them) unless the AI changes it first
+        field[0] = FieldBasis::new(&Basis::from(1));
+        field[1] = FieldBasis::none();
+        field[2] = FieldBasis::none();
+        // an unrelated opponent slot the AI could otherwise be tempted to target
+        field[3] = FieldBasis::new(&Basis::from(BasisCard::X2));
+
+        let ai_hand = vec![
+            // safe: integral(1) = x, so the opponent's derivative no longer zeroes it
+            Card::DerivativeCard(DerivativeCard::Integral),
+            // unsafe if aimed at field[3]: simplifies the opponent's x^2 (tempting
+            // score) but leaves field[0] untouched, so the threat on it survives
+            Card::DerivativeCard(DerivativeCard::Derivative),
+        ];
+        let opponent_hand = vec![Card::DerivativeCard(DerivativeCard::Derivative)];
+
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4, true);
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4);
+
+        assert!(
+            !has_winning_move(1, &opponent_hand, &chosen.resulting_field, 5),
+            "AI chose a move that leaves the opponent an immediate winning reply, \
+             despite a safe alternative (defusing field[0]) being available"
+        );
+    }
+
+    /// the AI must never choose a move that instantly loses the game by its own
+    /// hand (clearing its own last slot), even if that same move also simplifies an
+    /// opponent slot enough to look net-positive by raw score
+    #[test]
+    fn test_ai_never_picks_a_self_defeating_move_when_avoidable() {
+        // Field::new() starts every slot occupied -- slots meant to be empty must
+        // be cleared explicitly
+        let mut field = Field::new();
+        // AI's only remaining own slot -- derivative(1) = 0 would clear it,
+        // instantly losing the game by the AI's own hand
+        field[0] = FieldBasis::new(&Basis::from(1));
+        field[1] = FieldBasis::none();
+        field[2] = FieldBasis::none();
+
+        let ai_hand = vec![
+            // self-defeating if aimed at field[0]: derivative(1) = 0 clears the
+            // AI's own last slot, an instant loss regardless of its raw score
+            Card::DerivativeCard(DerivativeCard::Derivative),
+            // safe alternative: doesn't touch field[0]
+            Card::AlgebraicCard(AlgebraicCard::Sqrt),
+        ];
+        let opponent_hand = vec![Card::BasisCard(BasisCard::X)];
+
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4, true);
+        assert!(
+            candidates
+                .iter()
+                .any(|mv| side_is_cleared(&mv.resulting_field, AI_PLAYER_NUM)),
+            "test setup is wrong: no self-defeating candidate was generated at all"
+        );
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4);
+
+        assert!(
+            !side_is_cleared(&chosen.resulting_field, AI_PLAYER_NUM),
+            "AI chose a move that instantly loses the game by clearing its own side"
         );
     }
 }
