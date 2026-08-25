@@ -40,6 +40,25 @@ pub fn handle_mousedown(str_id: String) {
         return;
     }
 
+    // in a PLAYONLINE game, the local browser may only act on its own turns --
+    // the remote player's turns are driven exclusively by replaying messages
+    // received over the network (see on_action_received in game/online.rs)
+    if matches!(game.state, GameState::PLAYONLINE) {
+        let local_player_num = unsafe { crate::game::online::ONLINE_SESSION.as_ref() }
+            .map(|session| session.local_player_num);
+        if local_player_num != Some(game.get_current_player_num()) {
+            return;
+        }
+    }
+
+    // record this click for relay if it's part of the local player's own
+    // online turn (the guard above already filtered out anything else)
+    if matches!(game.state, GameState::PLAYONLINE) {
+        if let Some(session) = unsafe { crate::game::online::ONLINE_SESSION.as_mut() } {
+            session.record_click(id);
+        }
+    }
+
     match turn {
         Turn { number: n, .. } if n % 2 == 0 => {
             // even-number turn, player 1
@@ -442,6 +461,10 @@ pub fn next_turn() {
     };
     game.active.clear();
     render::draw();
+
+    if matches!(game.state, GameState::PLAYONLINE) {
+        crate::game::online::flush_outgoing_action();
+    }
 
     let field = game.field.basis.iter();
     if field.clone().take(3).all(|f| f.basis.is_none()) {

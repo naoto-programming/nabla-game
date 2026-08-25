@@ -1262,15 +1262,29 @@ Add to the `extern "C"` block:
     fn get_room_code_from_url() -> Option<String>;
 ```
 
-Add a new function for clipboard access (needs `web-sys`'s Clipboard API — add `"Clipboard"` and `"Navigator"` to the `web-sys` features list in `Cargo.toml`, next to the existing `"Window"` entry):
+Add a JS wrapper for clipboard access, in `js/online.js`, alongside `getRoomCodeFromUrl`:
+
+```js
+export const js_copy_to_clipboard = text => {
+	navigator.clipboard && navigator.clipboard.writeText(text).catch(() => {});
+};
+```
+
+(web-sys's own Clipboard bindings are gated behind the `web_sys_unstable_apis` rustc cfg flag against the project's pinned `web-sys 0.3.55` — enabling that would mean a project-wide build config change, including the CI workflow, just for a copy button. Going through JS avoids that entirely, the same way Trystero itself is wrapped in JS rather than bound directly.)
+
+Add the binding and a thin Rust wrapper in `src/game/online.rs`'s `extern "C"` block:
 
 ```rust
-/// copies `text` to the clipboard; errors (eg. permission denied) are ignored --
-/// this is a "nice to have" convenience button, not a critical action
+    #[wasm_bindgen(js_name = js_copy_to_clipboard)]
+    fn js_copy_to_clipboard(text: String);
+```
+
+```rust
+/// copies `text` to the clipboard via the JS wrapper above. Errors (eg.
+/// permission denied) are ignored -- this is a "nice to have" convenience
+/// button, not a critical action
 pub fn copy_to_clipboard(text: String) {
-    if let Some(window) = web_sys::window() {
-        let _ = window.navigator().clipboard().write_text(text.as_str());
-    }
+    js_copy_to_clipboard(text);
 }
 
 pub fn room_code_from_url() -> Option<String> {
@@ -1278,18 +1292,10 @@ pub fn room_code_from_url() -> Option<String> {
 }
 ```
 
-Modify `Cargo.toml`'s `[dependencies.web-sys]` `features` list to add the two new entries next to `"Window",`:
-
-```toml
-  "Window",
-  "Navigator",
-  "Clipboard",
-```
-
 - [ ] **Step 6: Verify it compiles**
 
 Run: `cargo check --lib`
-Expected: no errors. If `Clipboard`/`Navigator` types don't expose `write_text` with this exact signature, check the currently-pinned `web-sys` version's docs (`Cargo.lock`'s `web-sys` version) and adjust — this is the one spot in this plan where the exact method signature wasn't independently verified against the pinned dependency version, so confirm it compiles before moving on.
+Expected: no errors.
 
 - [ ] **Step 7: Build and verify with two Playwright browser contexts**
 

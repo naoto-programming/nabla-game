@@ -62,6 +62,18 @@
     "@nodelib/fs.scandir" "2.1.5"
     fastq "^1.6.0"
 
+"@trystero-p2p/core@0.25.3":
+  version "0.25.3"
+  resolved "https://registry.yarnpkg.com/@trystero-p2p/core/-/core-0.25.3.tgz#1d5a8b8632e201d614febcbcad62bcbc94164beb"
+  integrity sha512-lQKNq/ha+vF6kQZrpaXJGzlzxLF/Fhizoy5dwJUYQlkqRrbPup/Jov2EpPX/CPr2X+f79HxVzonkeni3MxmCuQ==
+
+"@trystero-p2p/torrent@^0.25.3":
+  version "0.25.3"
+  resolved "https://registry.yarnpkg.com/@trystero-p2p/torrent/-/torrent-0.25.3.tgz#10640d567a32edd18026c8410815a4d972f03fd6"
+  integrity sha512-S+L+4vRAo5LBh9z3kUjio3l/8GNC/A0jbjOda3F1eumkDnmfIiIrFvpgB5ZBHTpB2EXqgaZYyKpxXWziXlndcA==
+  dependencies:
+    "@trystero-p2p/core" "0.25.3"
+
 "@types/body-parser@*":
   version "1.19.2"
   resolved "https://registry.yarnpkg.com/@types/body-parser/-/body-parser-1.19.2.tgz#aea2059e28b7658639081347ac4fab3de166e6f0"

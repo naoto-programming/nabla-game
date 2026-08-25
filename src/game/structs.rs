@@ -72,6 +72,30 @@ impl Game {
         };
     }
 
+    /// builds a Game from deck/hand contents received from the host, instead
+    /// of generating them locally -- both sides of an online match must end
+    /// up with byte-for-byte the same deck and hands, so only the host's
+    /// `Game::new()` ever calls the RNG for a given match (see game/online.rs)
+    pub fn from_online_parts(deck: Vec<Card>, player_1: Vec<Card>, player_2: Vec<Card>) -> Game {
+        Game {
+            state: GameState::MENU,
+            turn: Turn {
+                number: 0,
+                phase: TurnPhase::IDLE,
+            },
+            field: Field::new(),
+            player_1,
+            player_2,
+            deck,
+            graveyard: vec![],
+            active: ActiveCards {
+                selected: Vec::default(),
+                hover: None,
+            },
+            pending: None,
+        }
+    }
+
     /// get current player based on turn number
     pub fn get_current_player_num(&self) -> u32 {
         if self.turn.number % 2 == 0 {
