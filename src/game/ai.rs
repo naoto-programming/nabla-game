@@ -169,9 +169,19 @@ fn try_take_ai_turn() {
 fn take_ai_turn() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(try_take_ai_turn));
     unsafe { AI_IS_TAKING_TURN = false };
-    if result.is_err() {
+    if let Err(payload) = result {
+        // console_error_panic_hook (enabled unconditionally, see lib.rs) already
+        // printed the real panic message + source location the moment it
+        // happened; this just makes the forfeit-instead-of-freeze outcome
+        // unambiguous right next to it, including the message again in case that
+        // line scrolled by unnoticed
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "(non-string panic payload)".to_string());
         web_sys::console::error_1(
-            &"AI move panicked -- forfeiting its turn instead of freezing".into(),
+            &format!("AI move panicked ({message}) -- forfeiting its turn instead of freezing").into(),
         );
         next_turn();
     }

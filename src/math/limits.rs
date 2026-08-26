@@ -96,8 +96,16 @@ pub fn limit(limit_card: &LimitCard) -> impl Fn(&Basis) -> Option<Basis> {
                     }
                     BasisOperator::Div => {
                         let denominator_limit = limit(&limit_card)(&operands[1]);
-                        if denominator_limit.as_ref().unwrap().is_num(0)
-                            || denominator_limit.is_none()
+                        // is_none() must be checked BEFORE unwrap().is_num(0) -- `||`
+                        // evaluates its left side first, so the original order
+                        // called .unwrap() on a None denominator_limit before ever
+                        // reaching the is_none() check that exists specifically to
+                        // guard against that, panicking (and crashing the whole WASM
+                        // module -- this isn't caught by any catch_unwind, since a
+                        // human's own click-driven move reaches this same code
+                        // directly) whenever this specific limit is undefined
+                        if denominator_limit.is_none()
+                            || denominator_limit.as_ref().unwrap().is_num(0)
                         {
                             return None; // invalid limit, (1/0)
                         } else if denominator_limit.as_ref().unwrap().is_inf(1)
@@ -106,7 +114,7 @@ pub fn limit(limit_card: &LimitCard) -> impl Fn(&Basis) -> Option<Basis> {
                             return Some(Basis::from(0));
                         } else if base_limit.is_none() {
                             return None;
-                        } else if base_limit.as_ref().unwrap().is_inf(-1)
+                        } else if base_limit.as_ref().unwrap().is_inf(1)
                             || base_limit.as_ref().unwrap().is_inf(-1)
                             || base_limit.as_ref().unwrap().is_num(0)
                         {

@@ -46,10 +46,23 @@ pub fn on_animation_frame(time: f64) {
         let removed = anim_controller.anim_items.remove(&id).unwrap();
         removed.callback.iter().for_each(|f| f());
 
-        if anim_controller.anim_chain.contains_key(&id) {
-            let anim_queue = anim_controller.anim_chain.entry(id).or_default();
-            let next_anim = anim_queue.remove(0);
-            anim_controller.anim_items.insert(id, next_anim);
+        // pops the next queued animation for this id, if any -- and removes the
+        // map entry entirely once its queue is drained (rather than leaving an
+        // empty Vec behind). RenderIds get reused constantly (only 7 hand slots
+        // per player, recycled every time a card is dealt into one), so without
+        // this cleanup, a later unrelated animation on that same id would find
+        // contains_key() still true from the stale, already-empty entry and
+        // panic on remove(0) -- "removal index (is 0) should be < len (is 0)"
+        let mut queue_now_empty = false;
+        if let Some(anim_queue) = anim_controller.anim_chain.get_mut(&id) {
+            if !anim_queue.is_empty() {
+                let next_anim = anim_queue.remove(0);
+                anim_controller.anim_items.insert(id, next_anim);
+            }
+            queue_now_empty = anim_queue.is_empty();
+        }
+        if queue_now_empty {
+            anim_controller.anim_chain.remove(&id);
         }
     }
 
@@ -127,6 +140,18 @@ pub fn animate_deal(id: RenderId) -> (RenderId, AnimItem) {
     let deck_pos = &render_items[&RenderId::Deck];
     let target_pos = &render_items[&id];
 
+    // which player this deal is actually for, captured now (while `id` -- the
+    // exact hand slot this animation is filling -- is still known) rather than
+    // inferred later from "whoever's turn it is when the callback fires,
+    // inverted". That inference assumed no other turn could pass in the 300ms
+    // between scheduling this animation and it completing, which doesn't hold in
+    // general (eg. the AI's own reply, or another queued deal, landing inside
+    // that window) -- get_current_player_num() would then report the wrong
+    // player, silently dealing the card into the wrong hand and leaving the
+    // other hand one card short of its intended replenishment
+    let (id_key, _) = id.key_val();
+    let dealt_to_player_1 = id_key == "p1";
+
     (
         RenderId::Deal,
         AnimItem {
@@ -139,22 +164,20 @@ pub fn animate_deal(id: RenderId) -> (RenderId, AnimItem) {
                 (AnimAttribute::H, (deck_pos.h, target_pos.h)),
                 (AnimAttribute::R, (deck_pos.r, target_pos.r)),
             ]),
-            callback: vec![|| {
+            callback: vec![Box::new(move || {
                 let game = unsafe { GAME.as_mut().unwrap() };
-                // inverted since the turn is already advanced
-                let player = if game.get_current_player_num() == 1 {
-                    &mut game.player_2
-                } else {
+                let player = if dealt_to_player_1 {
                     &mut game.player_1
+                } else {
+                    &mut game.player_2
                 };
                 player.push(game.deck.pop().unwrap());
                 render::draw();
-            }],
+            })],
         },
     )
 }
 
-#[derive(Debug)]
 pub struct AnimController {
     pub anim_items: HashMap<RenderId, AnimItem>, // map of currently animated items
     pub anim_chain: HashMap<RenderId, Vec<AnimItem>>, // map of chain animation callbacks
@@ -169,12 +192,18 @@ impl AnimController {
 }
 
 /// generic animation item container
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct AnimItem {
     pub start: Option<f64>, // beginning timestamp of animation
     pub duration: f64,      // duration of animation in seconds
     pub attributes: HashMap<AnimAttribute, (f64, f64)>, // (start, end)
-    pub callback: Vec<fn() -> ()>, // callback list for animation end
+    // Box<dyn Fn()>, not a plain fn() -- animate_deal's callback needs to capture
+    // which player it's dealing to (see its doc comment for why inferring that
+    // from "current player, inverted" at the time the callback actually fires
+    // was unsound), and a plain fn pointer can't capture anything. Neither Clone
+    // nor Debug are derivable for a trait object like this (and neither was ever
+    // actually used for AnimItem), so this only implements Default now.
+    pub callback: Vec<Box<dyn Fn()>>, // callback list for animation end
 }
 
 /// attributes of a render item that are able to be interpolated

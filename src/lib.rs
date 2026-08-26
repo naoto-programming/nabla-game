@@ -32,9 +32,13 @@ pub static mut MENU: Option<Menu> = None;
 // This is like the `main` function, except for JavaScript.
 #[wasm_bindgen(start)]
 pub fn main_js() -> Result<(), JsValue> {
-    // This provides better error messages in debug mode.
-    // It's disabled in release mode so it doesn't bloat up the file size.
-    #[cfg(debug_assertions)]
+    // Turns an otherwise-opaque WASM trap ("unreachable executed", no further
+    // detail) into the actual Rust panic message + location in the browser
+    // console. This used to be debug-only (release "disabled it so it doesn't
+    // bloat up the file size"), but that tradeoff means any panic that reaches
+    // production is completely unreadable -- exactly the information needed to
+    // diagnose remaining AI-freeze reports. The size cost is a few KB, worth
+    // paying for being able to see what actually panicked in the field.
     console_error_panic_hook::set_once();
 
     let window = web_sys::window().unwrap();
