@@ -419,7 +419,21 @@ fn generate_candidates_for(
             Card::AlgebraicCard(AlgebraicCard::Div | AlgebraicCard::Mult) if include_multiselect => {
                 for a in 0..6 {
                     for b in 0..6 {
-                        if a == b || field[a].basis.is_none() || field[b].basis.is_none() {
+                        // Mult/Div combines two of the SAME player's own slots (build up
+                        // your own side) or two of the opponent's (simplify their side
+                        // using their own expressions) -- never one from each. Without
+                        // this, `a` (kept, merged) and `b` (always sacrificed, see below)
+                        // could land on opposite sides, so a single card play would
+                        // simultaneously alter both players' fields in one move: grow
+                        // whichever side `a` is on while emptying `b`'s slot on the
+                        // other side entirely -- a visibly different (and much stronger)
+                        // effect than every other card, which only ever touches one
+                        // player's side per play
+                        if a == b
+                            || field[a].basis.is_none()
+                            || field[b].basis.is_none()
+                            || field_owner(a) != field_owner(b)
+                        {
                             continue;
                         }
                         let bases = vec![
@@ -1116,5 +1130,52 @@ mod perf_tests {
             "AI chose a move that attacks its own field or strengthens the \
              opponent's, despite a safe alternative being available"
         );
+    }
+
+    #[test]
+    /// Mult/Div combine two field slots into one, always keeping `a` (merged
+    /// result) and discarding `b` -- if `a` and `b` could land on opposite
+    /// sides, a single card play would alter both players' fields at once
+    /// (grow whichever side `a` is on, empty `b`'s slot on the other side),
+    /// unlike every other card, which only ever touches one player's side per
+    /// play. Every field fully occupied maximizes the number of Mult/Div
+    /// candidates generated, giving the cross-side check the most surface
+    /// area to catch a regression on
+    fn test_mult_div_candidates_never_combine_slots_from_both_sides() {
+        let mut field = Field::new();
+        for i in 0..6 {
+            field[i] = FieldBasis::new(&Basis::from(BasisCard::X));
+        }
+
+        for card in [
+            Card::AlgebraicCard(AlgebraicCard::Mult),
+            Card::AlgebraicCard(AlgebraicCard::Div),
+        ] {
+            let hand = vec![card];
+            let candidates = generate_candidates_for(AI_PLAYER_NUM, &hand, &field, 4, true);
+            assert!(
+                !candidates.is_empty(),
+                "test setup is wrong: no {card} candidates were generated at all"
+            );
+            for mv in &candidates {
+                let field_indices: Vec<usize> = mv
+                    .clicks
+                    .iter()
+                    .filter(|id| id.is_field())
+                    .map(|id| id.key_val().1)
+                    .collect();
+                assert_eq!(
+                    field_indices.len(),
+                    2,
+                    "{card} move didn't target exactly 2 field slots: {field_indices:?}"
+                );
+                assert_eq!(
+                    field_owner(field_indices[0]),
+                    field_owner(field_indices[1]),
+                    "{card} combined slots {field_indices:?} from both sides of the field \
+                     in a single move"
+                );
+            }
+        }
     }
 }
