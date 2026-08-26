@@ -19,6 +19,9 @@ pub const AI_PLAYER_NUM: u32 = 2;
 
 pub static mut AI_DIFFICULTY: AiDifficulty = AiDifficulty::Medium;
 
+/// flag to prevent AI from taking multiple turns in a single real turn
+pub static mut AI_IS_TAKING_TURN: bool = false;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AiDifficulty {
     Easy,
@@ -104,6 +107,11 @@ pub fn maybe_take_ai_turn() {
     if !matches!(game.state, GameState::PLAYAI) || game.get_current_player_num() != AI_PLAYER_NUM {
         return;
     }
+    // Prevent AI from taking multiple turns in a single real turn
+    if unsafe { AI_IS_TAKING_TURN } {
+        return;
+    }
+    unsafe { AI_IS_TAKING_TURN = true };
     Timeout::new(700, take_ai_turn).forget();
 }
 
@@ -125,6 +133,7 @@ fn take_ai_turn() {
         // the AI stuck here would silently stall the whole game (turn never advances,
         // and nothing then stops a human from clicking through it as player 2) --
         // so the AI forfeits the turn instead of hanging it
+        unsafe { AI_IS_TAKING_TURN = false };
         next_turn();
         return;
     }
@@ -143,6 +152,9 @@ fn take_ai_turn() {
     if matches!(game.turn.phase, TurnPhase::CONFIRM) {
         branch_turn_phase(RenderId::Confirm, AI_PLAYER_NUM);
     }
+    
+    // Reset the flag after the AI completes its turn
+    unsafe { AI_IS_TAKING_TURN = false };
 }
 
 /// counts nodes in a Basis tree, used as a cheap complexity/"simplicity" proxy
@@ -195,16 +207,26 @@ fn score_replacement(evaluating_player: u32, target: usize, new_basis: &Basis, f
 }
 
 /// scores a Nabla/Laplacian play across all 3 slots of the targeted half, from
-/// `evaluating_player`'s point of view (see score_replacement)
+/// `evaluating_player`'s point of view (see score_replacement). Heavily penalizes
+/// applying Nabla/Laplacian to the AI's own half since it clears/simplifies the AI's
+/// own cards, which is strategically disadvantageous.
 fn score_half(evaluating_player: u32, half_start: usize, is_laplacian: bool, field: &Field) -> f64 {
-    (half_start..half_start + 3)
+    let is_own_half = (evaluating_player == 2 && half_start == 0) || (evaluating_player == 1 && half_start == 3);
+    let base_score: f64 = (half_start..half_start + 3)
         .filter_map(|i| field[i].basis.as_ref().map(|basis| (i, basis)))
         .map(|(i, basis)| {
             let once = derivative(basis);
             let result = if is_laplacian { derivative(&once) } else { once };
             score_replacement(evaluating_player, i, &result, field)
         })
-        .sum()
+        .sum();
+    
+    // Heavy penalty for applying Nabla/Laplacian to own half
+    if is_own_half {
+        base_score - 200.0
+    } else {
+        base_score
+    }
 }
 
 /// applies a Nabla/Laplacian half-field derivative to a cloned field, mirroring
@@ -276,12 +298,17 @@ fn generate_candidates_for(
                     let resulting_field = apply_half_to_field(half_start, false, field);
                     let wins_immediately =
                         side_is_cleared(&resulting_field, opponent_of(player_num));
-                    moves.push(AiMove {
-                        clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
-                        score: score_half(player_num, half_start, false, field),
-                        resulting_field,
-                        wins_immediately,
-                    });
+                    let score = score_half(player_num, half_start, false, field);
+                    // Skip Nabla on own half entirely unless it wins immediately
+                    let is_own_half = (player_num == 2 && half_start == 0) || (player_num == 1 && half_start == 3);
+                    if !is_own_half || wins_immediately {
+                        moves.push(AiMove {
+                            clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
+                            score,
+                            resulting_field,
+                            wins_immediately,
+                        });
+                    }
                 }
             }
             Card::DerivativeCard(DerivativeCard::Laplacian) if turn_number >= 2 => {
@@ -289,12 +316,17 @@ fn generate_candidates_for(
                     let resulting_field = apply_half_to_field(half_start, true, field);
                     let wins_immediately =
                         side_is_cleared(&resulting_field, opponent_of(player_num));
-                    moves.push(AiMove {
-                        clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
-                        score: score_half(player_num, half_start, true, field),
-                        resulting_field,
-                        wins_immediately,
-                    });
+                    let score = score_half(player_num, half_start, true, field);
+                    // Skip Laplacian on own half entirely unless it wins immediately
+                    let is_own_half = (player_num == 2 && half_start == 0) || (player_num == 1 && half_start == 3);
+                    if !is_own_half || wins_immediately {
+                        moves.push(AiMove {
+                            clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
+                            score,
+                            resulting_field,
+                            wins_immediately,
+                        });
+                    }
                 }
             }
             Card::AlgebraicCard(AlgebraicCard::Div | AlgebraicCard::Mult) if include_multiselect => {
@@ -354,9 +386,17 @@ fn generate_candidates_for(
                         };
                         let wins_immediately =
                             side_is_cleared(&resulting_field, opponent_of(player_num));
+                        let mut score = score_replacement(player_num, target, &result, field);
+                        // Additional penalty for Integral on opponent's side (strengthens opponent)
+                        if matches!(card, Card::DerivativeCard(DerivativeCard::Integral)) {
+                            let is_opponent_side = field_owner(target) != player_num;
+                            if is_opponent_side {
+                                score -= 150.0; // Heavy penalty for strengthening opponent
+                            }
+                        }
                         moves.push(AiMove {
                             clicks: vec![hand_id, RenderId::from(format!("f={target}"))],
-                            score: score_replacement(player_num, target, &result, field),
+                            score,
                             resulting_field,
                             wins_immediately,
                         });

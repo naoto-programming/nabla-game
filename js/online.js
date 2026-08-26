@@ -50,9 +50,8 @@ const sanitizeIceServers = servers =>
 
 // fetched once at module load (not per-room) so it's already resolved (or at
 // least in flight) by the time the user actually clicks Create/Join a few
-// seconds later. Falls back to no TURN servers at all (direct P2P / Trystero's
-// own default STUN only) rather than failing room creation outright -- that
-// still works for peers without restrictive NATs.
+// seconds later. Falls back to free STUN/TURN servers when metered.ca is unavailable
+// or when METERED_API_KEY is not configured.
 const turnConfigPromise = fetch(TURN_CREDENTIALS_URL)
 	.then(res => {
 		if (!res.ok) throw new Error(`metered.ca TURN credentials request failed: ${res.status}`);
@@ -60,8 +59,29 @@ const turnConfigPromise = fetch(TURN_CREDENTIALS_URL)
 	})
 	.then(sanitizeIceServers)
 	.catch(err => {
-		console.warn('Falling back to no TURN servers -- TURN credentials fetch failed:', err);
-		return [];
+		console.warn('Falling back to free STUN/TURN servers -- TURN credentials fetch failed:', err);
+		// Free STUN/TURN servers as fallback for cross-network P2P connections
+		return [
+			{
+				urls: 'stun:stun.l.google.com:19302'
+			},
+			{
+				urls: 'stun:stun1.l.google.com:19302'
+			},
+			{
+				urls: 'stun:stun2.l.google.com:19302'
+			},
+			{
+				urls: 'turn:openrelay.metered.ca:80',
+				username: 'openrelayproject',
+				credential: 'openrelayproject'
+			},
+			{
+				urls: 'turn:openrelay.metered.ca:443',
+				username: 'openrelayproject',
+				credential: 'openrelayproject'
+			}
+		];
 	});
 
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I/L
