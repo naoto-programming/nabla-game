@@ -19,19 +19,50 @@ import {
 // just keeps our rooms from colliding with unrelated apps using the same relays
 const APP_ID = 'nabla-game-naoto-programming';
 
-// Open Relay Project's free, no-signup TURN fallback (used only when a direct
-// P2P connection can't be established, eg. restrictive NATs). No "?transport=tcp"
-// query string on any of these -- WebKit's RTCPeerConnection throws "Invalid TURN
-// URL query string" on that and aborts iceServers setup entirely (not just that one
-// URL), which silently broke every connection attempt on iOS/Safari specifically
-// while working fine on Chromium. Plain host:port URLs work identically everywhere.
-const TURN_CONFIG = [
-	{
-		urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443'],
-		username: 'openrelayproject',
-		credential: 'openrelayproject',
-	},
-];
+// metered.ca's free-tier TURN fallback (used only when a direct P2P connection
+// can't be established, eg. restrictive NATs). Open Relay Project's old static,
+// no-signup credentials (username/credential both "openrelayproject") were
+// retired -- metered.ca now requires a per-account API key, with the actual
+// iceServers list fetched from their REST endpoint rather than hardcoded.
+// The key itself is still visible to anyone opening devtools on the deployed
+// site (there's no backend to proxy this through), but METERED_API_KEY is
+// substituted at build time (see webpack.config.js's DefinePlugin, fed from
+// the METERED_API_KEY GitHub Actions secret) rather than committed to source,
+// so it isn't sitting in git history / GitHub code search.
+const TURN_CREDENTIALS_URL = `https://nabla-game.metered.live/api/v1/turn/credentials?apiKey=${process.env.METERED_API_KEY}`;
+
+// strips any "?transport=..." query string from a TURN/STUN URL. WebKit's
+// RTCPeerConnection throws "Invalid TURN URL query string" on ANY iceServers
+// entry that has one -- not just that entry, the whole iceServers setup aborts --
+// which silently broke every connection attempt on iOS/Safari while working fine
+// on Chromium (this bit us once already with the old static config). metered.ca's
+// credentials endpoint returns a couple of "?transport=tcp" variants; dropping the
+// query string is safe rather than lossy here, since it just falls back to each
+// scheme's own default transport (UDP for turn:, TLS/TCP for turns:) which is
+// what those variants were asking for anyway.
+const stripTransportParam = url => url.split('?')[0];
+const sanitizeIceServers = servers =>
+	servers.map(server => {
+		const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+		const deduped = [...new Set(urls.map(stripTransportParam))];
+		return { ...server, urls: deduped.length === 1 ? deduped[0] : deduped };
+	});
+
+// fetched once at module load (not per-room) so it's already resolved (or at
+// least in flight) by the time the user actually clicks Create/Join a few
+// seconds later. Falls back to no TURN servers at all (direct P2P / Trystero's
+// own default STUN only) rather than failing room creation outright -- that
+// still works for peers without restrictive NATs.
+const turnConfigPromise = fetch(TURN_CREDENTIALS_URL)
+	.then(res => {
+		if (!res.ok) throw new Error(`metered.ca TURN credentials request failed: ${res.status}`);
+		return res.json();
+	})
+	.then(sanitizeIceServers)
+	.catch(err => {
+		console.warn('Falling back to no TURN servers -- TURN credentials fetch failed:', err);
+		return [];
+	});
 
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I/L
 
@@ -43,6 +74,10 @@ const CONNECT_TIMEOUT_MS = 30000;
 let room = null;
 let initAction = null;
 let moveAction = null;
+// invalidates a pending startRoom() call if leave/create/join supersedes it
+// before the TURN config fetch resolves (eg. the user cancels or immediately
+// creates a new room while the first fetch was still in flight)
+let joinToken = 0;
 
 const withConnectTimeout = () => {
 	const timer = setTimeout(() => {
@@ -63,9 +98,8 @@ const attachMessageActions = () => {
 	};
 };
 
-export const js_create_room = () => {
-	const code = generateRoomCode();
-	room = joinRoom({ appId: APP_ID, turnConfig: TURN_CONFIG }, code, {
+const startRoom = (code, turnConfig) => {
+	room = joinRoom({ appId: APP_ID, turnConfig }, code, {
 		onJoinError: () => on_connection_error(),
 	});
 	const clearTimeoutFn = withConnectTimeout();
@@ -75,6 +109,15 @@ export const js_create_room = () => {
 	};
 	room.onPeerLeave = () => on_peer_disconnected();
 	attachMessageActions();
+};
+
+export const js_create_room = () => {
+	const code = generateRoomCode();
+	const token = ++joinToken;
+	turnConfigPromise.then(turnConfig => {
+		if (token !== joinToken) return;
+		startRoom(code, turnConfig);
+	});
 
 	return code;
 };
@@ -84,16 +127,11 @@ export const js_join_room = code => {
 	// a manually-typed code so a stray lowercase paste doesn't silently join a
 	// different (nonexistent) room and only fail 30s later via the connect timeout
 	const normalizedCode = code.trim().toUpperCase();
-	room = joinRoom({ appId: APP_ID, turnConfig: TURN_CONFIG }, normalizedCode, {
-		onJoinError: () => on_connection_error(),
+	const token = ++joinToken;
+	turnConfigPromise.then(turnConfig => {
+		if (token !== joinToken) return;
+		startRoom(normalizedCode, turnConfig);
 	});
-	const clearTimeoutFn = withConnectTimeout();
-	room.onPeerJoin = () => {
-		clearTimeoutFn();
-		on_peer_connected();
-	};
-	room.onPeerLeave = () => on_peer_disconnected();
-	attachMessageActions();
 };
 
 export const js_send_init = (deck, hand1, hand2) => {
@@ -105,6 +143,7 @@ export const js_send_action = clicks => {
 };
 
 export const js_leave_room = () => {
+	joinToken++; // invalidate any join still waiting on the TURN config fetch
 	if (room) room.leave();
 	room = null;
 	initAction = null;
