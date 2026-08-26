@@ -249,6 +249,20 @@ impl Canvas {
             self.update_render_constants();
         }
 
+        // For landscape mode on mobile, also check if we need horizontal growth
+        let is_mobile = is_mobile_layout(self.canvas_bounds.x, self.canvas_bounds.y);
+        let is_landscape = self.canvas_bounds.x > self.canvas_bounds.y;
+        if is_mobile && is_landscape {
+            let required_width = self.required_canvas_width();
+            if required_width > self.canvas_bounds.x {
+                let grown_width = required_width.ceil() as u32;
+                self.canvas_element.set_width(grown_width);
+                self.hit_canvas_element.set_width(grown_width);
+                self.rebounds();
+                self.update_render_constants();
+            }
+        }
+
         // CSS alone can't know the canvas's own computed pixel height, so the
         // scrollable body's min-height is driven from here directly
         if let Some(body) = document.body() {
@@ -277,6 +291,24 @@ impl Canvas {
             is_mobile,
             &self.canvas_bounds,
         )
+    }
+
+    /// the total horizontal space the current layout needs for landscape mode
+    fn required_canvas_width(&self) -> f64 {
+        let is_mobile = is_mobile_layout(self.canvas_bounds.x, self.canvas_bounds.y);
+        let card_width = self.render_constants.player_sizes.width;
+        let gutter = card_width / 4.0;
+        
+        // In landscape mode, we need to fit the field horizontally
+        // Field is 3 columns with gutters: 3 * field_basis_width + 2 * field_gutter
+        let field_basis_width = self.render_constants.field_sizes.width;
+        let field_gutter = self.render_constants.field_sizes.gutter;
+        let field_width = field_basis_width * 3.0 + field_gutter * 2.0;
+        
+        // Add margins
+        let margin = if is_mobile { gutter * 2.0 } else { gutter * 4.0 };
+        
+        field_width + margin
     }
 
     /// recalculate canvas bounds and center on resize
