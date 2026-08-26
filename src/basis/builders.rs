@@ -256,12 +256,16 @@ fn assemble_mult(coefficient: Fraction, numerator: Vec<Basis>, denominator: Vec<
     {
         return Basis::from(0);
     }
-    // n / 0, invalid
+    // n / 0: mathematically undefined, but the AI's Div search tries every pair of
+    // field slots regardless of what's in them, so this must degrade to a legal
+    // (if unusual) result rather than panic and freeze the match. Basis::inf(1) is
+    // an arbitrary but safe choice -- the game already has real machinery for
+    // handling an Inf basis elsewhere (see BasisElement::Inf), unlike a panic here
     else if denominator
         .iter()
         .any(|op| op.is_num(0) || op.coefficient() == 0)
     {
-        panic!("Divide by zero, {:?} {:?}", numerator, denominator);
+        return Basis::inf(1);
     }
     // -INF * x = -INF | x * -INF = -INF
     if numerator.iter().any(|op| op.is_inf(-1)) {

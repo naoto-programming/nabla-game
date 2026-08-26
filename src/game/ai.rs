@@ -118,7 +118,9 @@ pub fn maybe_take_ai_turn() {
     Timeout::new(700, take_ai_turn).forget();
 }
 
-fn take_ai_turn() {
+/// runs the AI's actual decision + click execution -- split out from take_ai_turn
+/// purely so the latter can wrap this call in catch_unwind (see its doc)
+fn try_take_ai_turn() {
     let game = unsafe { GAME.as_ref().unwrap() };
     // true: the AI's own real candidates must include Mult/Div, or it would never
     // consider (or be able to play) those cards at all
@@ -136,7 +138,6 @@ fn take_ai_turn() {
         // the AI stuck here would silently stall the whole game (turn never advances,
         // and nothing then stops a human from clicking through it as player 2) --
         // so the AI forfeits the turn instead of hanging it
-        unsafe { AI_IS_TAKING_TURN = false };
         next_turn();
         return;
     }
@@ -155,9 +156,25 @@ fn take_ai_turn() {
     if matches!(game.turn.phase, TurnPhase::CONFIRM) {
         branch_turn_phase(RenderId::Confirm, AI_PLAYER_NUM);
     }
-    
-    // Reset the flag after the AI completes its turn
+}
+
+/// entry point scheduled by maybe_take_ai_turn. Wraps try_take_ai_turn in
+/// catch_unwind as a last-resort safety net: an unexpected panic anywhere in move
+/// generation/selection/execution (eg. an edge case in the symbolic math that
+/// wasn't caught in testing) would otherwise leave AI_IS_TAKING_TURN stuck true
+/// forever -- silently disabling the AI for the rest of the match, since
+/// maybe_take_ai_turn would then bail out on every future call without ever
+/// explaining why. Always resets the flag and forfeits the turn instead, the same
+/// graceful fallback already used when the AI has no legal move at all
+fn take_ai_turn() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(try_take_ai_turn));
     unsafe { AI_IS_TAKING_TURN = false };
+    if result.is_err() {
+        web_sys::console::error_1(
+            &"AI move panicked -- forfeiting its turn instead of freezing".into(),
+        );
+        next_turn();
+    }
 }
 
 /// counts nodes in a Basis tree, used as a cheap complexity/"simplicity" proxy
@@ -634,6 +651,54 @@ fn choose_move(
 #[cfg(test)]
 mod perf_tests {
     use super::*;
+    use crate::math::fraction::Fraction;
+    use crate::math::logarithm::logarithm;
+    use crate::math::util::function_composition;
+
+    /// builds a Basis nested `depth` levels deep via direct BasisNode construction
+    /// (bypassing PowBasisNode's builder, which may normalize/flatten nested
+    /// operands and so wouldn't reliably produce real structural depth) -- used to
+    /// exercise ComputeDepthGuard's bail-out path in logarithm()/
+    /// function_composition(). Confirmed by direct experiment (temporarily
+    /// stripping the guard) that logarithm() genuinely stack-overflows and aborts
+    /// the process on input this shape at a depth in the thousands -- the depth
+    /// used by the tests below (100, comfortably past MAX_COMPUTE_DEPTH's 48) is
+    /// deep enough to force the guard to actually bail out mid-recursion, while
+    /// staying shallow enough that the bailed-out clone of the remaining subtree
+    /// can't itself become a second, unrelated stack-depth problem
+    fn deeply_nested_basis(depth: u32) -> Basis {
+        let mut basis = Basis::x();
+        for _ in 0..depth {
+            basis = Basis::BasisNode(BasisNode {
+                coefficient: Fraction::from(1),
+                operator: BasisOperator::Pow(Fraction { n: 1, d: 1 }),
+                operands: vec![basis],
+            });
+        }
+        basis
+    }
+
+    /// logarithm() recurses through Pow nodes with no depth check of its own
+    /// (unlike derivative/integral/inverse, which all guard themselves) -- a
+    /// sufficiently nested expression previously would have overflowed the stack
+    /// instead of returning. The AI's exhaustive search (tries every card against
+    /// every field slot every turn) hits this far more easily than a human would,
+    /// since expressions grow more nested the longer a game runs
+    #[test]
+    fn test_logarithm_does_not_overflow_on_deeply_nested_input() {
+        let basis = deeply_nested_basis(100);
+        // must simply return without panicking/overflowing; the exact bailed-out
+        // value isn't the point of this test
+        let _ = logarithm(&basis);
+    }
+
+    /// same gap, same fix, for function_composition (used by derivative's inverse
+    /// rule and by integration-by-parts' LIATE substitution)
+    #[test]
+    fn test_function_composition_does_not_overflow_on_deeply_nested_input() {
+        let basis = deeply_nested_basis(100);
+        let _ = function_composition(&basis, &Basis::x());
+    }
 
     /// stacks the hand with the single most expensive card type (Mult/Div, up to 30
     /// pair-combinations each) to stress the search as hard as realistically possible
@@ -660,6 +725,60 @@ mod perf_tests {
             field[i] = FieldBasis::new(&basis);
         }
         field
+    }
+
+    /// a field where every slot has been repeatedly integrated several times --
+    /// approximates what a real, long-running game's field actually looks like
+    /// (genuinely nested expressions from many turns of Integral/Nabla play), unlike
+    /// full_field's freshly-dealt 1/x/x^2 values. Used to check the AI's decision
+    /// process (including Log, whose missing depth guard was the actual cause of
+    /// the AI freezing partway through a game -- see logarithm.rs) against
+    /// something structurally closer to what triggers that class of bug in practice
+    fn long_game_field() -> Field {
+        let mut field = Field::new();
+        for i in 0..6 {
+            let mut basis = match i % 3 {
+                0 => Basis::from(1),
+                1 => Basis::from(BasisCard::X),
+                _ => Basis::from(BasisCard::X2),
+            };
+            for _ in 0..10 {
+                basis = crate::math::integral::integral(&basis);
+            }
+            field[i] = FieldBasis::new(&basis);
+        }
+        field
+    }
+
+    /// the AI's full decision process (including Log, whose recursion through
+    /// Mult/Div/Pow previously had no depth guard -- see logarithm.rs) must still
+    /// complete quickly and without panicking against a field shaped like a real,
+    /// long-running game rather than a freshly-dealt one
+    #[test]
+    fn test_hard_ai_handles_a_long_games_nested_field_without_freezing() {
+        let field = long_game_field();
+        let ai_hand = vec![
+            Card::AlgebraicCard(AlgebraicCard::Log),
+            Card::AlgebraicCard(AlgebraicCard::Log),
+            Card::DerivativeCard(DerivativeCard::Derivative),
+            Card::DerivativeCard(DerivativeCard::Integral),
+            Card::AlgebraicCard(AlgebraicCard::Sqrt),
+            Card::AlgebraicCard(AlgebraicCard::Inverse),
+            Card::LimitCard(LimitCard::LimPosInf),
+        ];
+        let opponent_hand = ai_hand.clone();
+
+        let start = std::time::Instant::now();
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 20, true);
+        assert!(!candidates.is_empty(), "long-game field should still have legal moves");
+        let _chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 20);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed.as_millis() < 3000,
+            "AI decision against a long-game field took {:?} -- too slow, risks looking frozen",
+            elapsed
+        );
     }
 
     /// reproduces the "AI stops" report: with the pool cap removed for Hard (so it

@@ -206,14 +206,17 @@ pub fn limit(limit_card: &LimitCard) -> impl Fn(&Basis) -> Option<Basis> {
                             }
                         }
                     }
-                    BasisOperator::Inv => {
-                        unimplemented!(
-                            "Not yet implemented: {} of {} ({:?})",
-                            limit_card,
-                            basis,
-                            basis
-                        );
-                    }
+                    // limit of an unresolved Inv node (inverse() falls back to this
+                    // when it can't find an actual inverse for some expression --
+                    // see InvBasisNode) isn't handled here, same as the `_ => None`
+                    // fallback a few lines above for other operators this function
+                    // doesn't know how to take a limit of. This used to panic
+                    // instead: the AI's exhaustive search tries every LimitCard
+                    // against every field slot regardless of what's in it, so a
+                    // single earlier Inverse play landing on an irreversible
+                    // expression was enough to freeze the whole match the next time
+                    // the AI (or a human) tried any Limit card at all
+                    BasisOperator::Inv => None,
                     BasisOperator::Int => {
                         // assume that the limits of integration are from 0 to x for INF, x to 0 for -INF, what for 0?
                         let _res = integral_limit(basis);

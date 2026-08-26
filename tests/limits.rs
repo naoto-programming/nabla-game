@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use nabla_game;
+use nabla_game::basis::builders::InvBasisNode;
 use nabla_game::basis::structs::Basis;
 use nabla_game::game::cards::LimitCard;
 use nabla_game::math::limits::limit;
@@ -137,4 +138,27 @@ fn test_complex_basis_limits() {
     a = Basis::x() * sin_x();
     println!("lim, x→INF({}) = None", a);
     assert_eq!(limit(&LimitCard::LimPosInf)(&a), None);
+}
+
+/// limit() of an unresolved Inv node (inverse() falls back to InvBasisNode when it
+/// can't find an actual inverse, eg. for sin(x) + cos(x)) previously panicked via
+/// an unimplemented!() rather than returning None like every other not-yet-handled
+/// case in this function -- the AI's exhaustive search tries every LimitCard
+/// against every field slot regardless of what's in it, so a single earlier
+/// Inverse play landing on an irreversible expression was enough to freeze the
+/// whole match the next time any Limit card was tried at all
+#[test]
+fn test_limit_of_unresolved_inverse_does_not_panic() {
+    let unresolved_inverse = InvBasisNode(&(sin_x() + cos_x()));
+    for limit_card in [
+        LimitCard::Lim0,
+        LimitCard::LimPosInf,
+        LimitCard::LimNegInf,
+        LimitCard::Liminf,
+        LimitCard::Limsup,
+    ] {
+        // must simply not panic; None is the correct, already-established
+        // convention for "this function doesn't know how to take this limit"
+        assert_eq!(limit(&limit_card)(&unresolved_inverse), None);
+    }
 }

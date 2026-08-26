@@ -2,9 +2,23 @@
 use crate::basis::{builders::*, structs::*};
 // local imports
 use super::fraction::Fraction;
+use super::util::ComputeDepthGuard;
 
 /// calculates the logarithm of a Basis if possible, returns LogBasisNode if not
 pub fn logarithm(basis: &Basis) -> Basis {
+    // bail out on pathologically deep expressions rather than overflowing the stack
+    // -- unlike derivative/integral/inverse (which all guard themselves this way),
+    // this recurses through Mult/Div/Pow without a base case for depth, so a
+    // sufficiently nested expression (easily reached after many turns of
+    // Integral/Nabla play) can otherwise overflow the stack and crash/freeze the
+    // tab. The AI hits this far more easily than a human would, since its search
+    // tries Log against every field slot every turn regardless of how nested that
+    // slot's expression has grown
+    let _depth_guard = match ComputeDepthGuard::enter() {
+        Some(guard) => guard,
+        None => return basis.clone(),
+    };
+
     match basis {
         Basis::BasisLeaf(basis_leaf) => match basis_leaf.element {
             BasisElement::Num => {

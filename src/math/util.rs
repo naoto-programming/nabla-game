@@ -3,9 +3,15 @@ use std::cell::Cell;
 // outer crate imports
 use crate::basis::structs::*;
 
-/// tracks recursive depth across derivative()/integral(), which call each other
-/// (eg. integration by parts, inverse rule) and can otherwise recurse unboundedly
-/// on some expressions, freezing or crashing the tab
+/// tracks recursive depth across derivative()/integral()/inverse()/logarithm()/
+/// function_composition(), which call each other (eg. integration by parts, the
+/// inverse rule) and can otherwise recurse unboundedly on some expressions,
+/// freezing or crashing the tab. Every function that recurses on a Basis tree must
+/// guard itself with this -- logarithm() and function_composition() were both
+/// missing it despite living alongside functions that already do, letting the AI's
+/// exhaustive search (which tries every card against every field slot regardless
+/// of how deeply nested that slot's expression has grown) overflow the stack on a
+/// sufficiently long game
 /// (thread-local rather than a shared static: the game itself is single-threaded
 /// wasm, but `cargo test` runs tests concurrently on separate threads)
 thread_local! {
@@ -40,6 +46,15 @@ impl Drop for ComputeDepthGuard {
 
 /// implements recursive f o g
 pub fn function_composition(f: &Basis, g: &Basis) -> Basis {
+    // bail out on pathologically deep expressions rather than overflowing the
+    // stack -- this recurses through every BasisNode operand with no base case for
+    // depth otherwise, the same class of gap derivative/integral/inverse/logarithm
+    // all guard against (see ComputeDepthGuard's doc above)
+    let _depth_guard = match ComputeDepthGuard::enter() {
+        Some(guard) => guard,
+        None => return f.clone(),
+    };
+
     match f.clone() {
         Basis::BasisLeaf(basis_leaf) => {
             if basis_leaf.element == BasisElement::X {

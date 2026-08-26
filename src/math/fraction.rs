@@ -24,6 +24,14 @@ impl Fraction {
         }
     }
 
+    /// i32::pow saturated at the boundary instead of panicking (debug/test) or
+    /// silently wrapping (release) on overflow -- see the matching comment on
+    /// BitXor's impl below, where this is used
+    fn saturating_pow(base: i32, exp: u32) -> i32 {
+        base.checked_pow(exp)
+            .unwrap_or(if base < 0 && exp % 2 == 1 { i32::MIN } else { i32::MAX })
+    }
+
     /// helper function to find gcd of two numbers, uses Euclid's algorithm
     fn gcd(x: i32, y: i32) -> i32 {
         let (abs_x, abs_y) = (x.abs(), y.abs());
@@ -169,9 +177,20 @@ impl Add<(i32, i32)> for Fraction {
         } else if n == 0 || d == 0 {
             return self;
         }
+        // saturating, not plain *, +: repeatedly adding fractions with growing
+        // denominators (eg. the AI's search integrating an already-nested
+        // expression many times over a long game) can multiply denominators past
+        // i32::MAX. Plain arithmetic panics on overflow in debug/test builds and
+        // silently wraps into a nonsense value in release -- neither of which
+        // simplify() can safely recover from. Saturating just clamps growth at the
+        // boundary instead, the same "give up gracefully on a pathological case"
+        // philosophy as ComputeDepthGuard elsewhere in this module
         let out_frac = Fraction {
-            n: self.n * d + n * self.d,
-            d: self.d * d,
+            n: self
+                .n
+                .saturating_mul(d)
+                .saturating_add(n.saturating_mul(self.d)),
+            d: self.d.saturating_mul(d),
         };
         out_frac.simplify()
     }
@@ -233,9 +252,12 @@ impl Mul<(i32, i32)> for Fraction {
     type Output = Self;
 
     fn mul(self, (n, d): (i32, i32)) -> Self {
+        // saturating, not plain * -- see the matching comment on Add's impl above
+        // (this exact line is what a repeatedly-integrated field slot overflowed in
+        // practice, panicking in debug/test builds)
         let out_frac = Fraction {
-            n: self.n * n,
-            d: self.d * d,
+            n: self.n.saturating_mul(n),
+            d: self.d.saturating_mul(d),
         };
         out_frac.simplify()
     }
@@ -297,17 +319,21 @@ impl BitXor<i32> for Fraction {
     type Output = Self;
 
     fn bitxor(self, i: i32) -> Self {
+        // saturating_pow, not plain .pow() -- a fraction whose n/d have already
+        // grown large (eg. from many turns of integration) raised to even a modest
+        // power can overflow i32 extremely fast, panicking in debug/test builds and
+        // wrapping into a nonsense value in release
         if i == 0 {
             Fraction { n: 1, d: 1 }
         } else if i > 0 {
             Fraction {
-                n: self.n.pow(i as u32),
-                d: self.d.pow(i as u32),
+                n: Self::saturating_pow(self.n, i as u32),
+                d: Self::saturating_pow(self.d, i as u32),
             }
         } else {
             Fraction {
-                n: self.d.pow(i.abs() as u32),
-                d: self.n.pow(i.abs() as u32),
+                n: Self::saturating_pow(self.d, i.unsigned_abs()),
+                d: Self::saturating_pow(self.n, i.unsigned_abs()),
             }
         }
     }
