@@ -89,7 +89,9 @@ const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I/L
 const generateRoomCode = () =>
 	Array.from({ length: 6 }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join('');
 
-const CONNECT_TIMEOUT_MS = 30000;
+// generous margin for real cross-network conditions -- same-machine testing
+// always connects in a few seconds regardless, so it can't validate this number
+const CONNECT_TIMEOUT_MS = 45000;
 
 let room = null;
 let initAction = null;
@@ -119,9 +121,25 @@ const attachMessageActions = () => {
 };
 
 const startRoom = (code, turnConfig) => {
-	room = joinRoom({ appId: APP_ID, turnConfig }, code, {
-		onJoinError: () => on_connection_error(),
-	});
+	room = joinRoom(
+		{
+			appId: APP_ID,
+			turnConfig,
+			// this strategy defaults trickleIce to false (unlike Trystero's other
+			// strategies), meaning ICE candidates -- including the TURN server
+			// allocation, which itself needs a network round-trip -- must all be
+			// fully gathered before any offer/answer is even sent to the peer.
+			// Enabling it lets candidates (and the connection) start negotiating as
+			// they're found instead of waiting on the slowest one, which matters far
+			// more under real internet latency than it ever showed up in same-machine
+			// testing (that always connected in a few seconds either way)
+			trickleIce: true,
+		},
+		code,
+		{
+			onJoinError: () => on_connection_error(),
+		}
+	);
 	const clearTimeoutFn = withConnectTimeout();
 	room.onPeerJoin = () => {
 		clearTimeoutFn();

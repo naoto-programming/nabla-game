@@ -22,7 +22,21 @@ module.exports = {
 	},
 	output: {
 		path: dist,
+		// the entry point stays a plain, stable name since index.html hardcodes
+		// <script src="index.js"> (this isn't an HtmlWebpackPlugin setup, so nothing
+		// rewrites that reference to match a hashed filename)
 		filename: '[name].js',
+		// but its dynamically split/imported chunks -- which carry essentially all
+		// of the actual app code, including online.js -- are NOT referenced by
+		// hardcoded HTML; webpack's own runtime (baked into index.js) resolves them
+		// by whatever name they're given here, so hashing them is free. Without
+		// this, production mode names chunks by plain incrementing IDs (eg.
+		// "130.js"), which stay THE SAME across deploys even when their content
+		// changes -- combined with GitHub Pages' Cache-Control: max-age=600, a
+		// browser could easily keep serving a stale, pre-fix chunk under an
+		// unchanged URL for up to 10 minutes (or longer, depending on how
+		// aggressively it caches) after a fix actually goes live
+		chunkFilename: '[name].[contenthash].js',
 	},
 	module: {
 		rules: [
