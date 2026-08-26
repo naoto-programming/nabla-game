@@ -15,6 +15,87 @@ import {
 	on_action_received,
 } from '../../../index_bg.js';
 
+// --- verbose WebRTC diagnostics -------------------------------------------
+// Trystero only ever surfaces onPeerJoin/onPeerLeave/onJoinError -- none of
+// which say WHY a connection didn't come together (dead TURN server? no ICE
+// candidates at all? blocked signaling? one side never got a working
+// candidate pair?). Wrapping the native RTCPeerConnection is the standard way
+// to see the full picture: every ICE candidate gathered (and its type --
+// host/srflx/relay -- which is exactly what says whether a TURN relay
+// candidate ever showed up at all), every candidate GATHERING error (fires
+// when a STUN/TURN server itself is unreachable or rejects the request), and
+// every connection/ICE/signaling state transition, all timestamped.
+//
+// To use: open the browser devtools console (F12 or right-click -> Inspect,
+// then the "Console" tab) BEFORE creating or joining a room, then attempt the
+// connection. Every relevant line is prefixed "[RTC #n]" (n = a per-
+// connection counter, since each peer gets its own RTCPeerConnection).
+// Copy the full console output (right-click in the console -> "Save as..." in
+// Chrome, or select-all + copy) so it can be read back for diagnosis.
+if (typeof RTCPeerConnection !== 'undefined') {
+	const NativeRTCPeerConnection = RTCPeerConnection;
+	let peerCounter = 0;
+
+	const describeIceServers = iceServers =>
+		(iceServers || []).map(s => ({
+			urls: s.urls,
+			hasCredentials: Boolean(s.username || s.credential),
+		}));
+
+	window.RTCPeerConnection = function (config, ...rest) {
+		const id = ++peerCounter;
+		const log = (...args) => console.log(`[RTC #${id}]`, new Date().toISOString(), ...args);
+
+		log('new RTCPeerConnection, iceServers:', describeIceServers(config?.iceServers), 'iceTransportPolicy:', config?.iceTransportPolicy ?? '(default: all)');
+
+		const pc = new NativeRTCPeerConnection(config, ...rest);
+
+		pc.addEventListener('icecandidate', e => {
+			if (!e.candidate) {
+				log('ICE gathering finished (null candidate signals end-of-candidates)');
+				return;
+			}
+			const c = e.candidate;
+			// type: host (direct LAN/local address), srflx (STUN-discovered public
+			// address, ie. direct P2P should work), relay (TURN server relay, ie.
+			// this candidate came from our TURN config actually being used), prflx
+			// (discovered via connectivity checks, rare to see here)
+			log(
+				'local candidate:',
+				`type=${c.type}`,
+				`protocol=${c.protocol}`,
+				`address=${c.address ?? c.ip ?? '(hidden)'}`,
+				`port=${c.port}`,
+				`relatedAddress=${c.relatedAddress ?? 'n/a'}`
+			);
+		});
+		pc.addEventListener('icecandidateerror', e => {
+			// fires when gathering a candidate from a specific STUN/TURN server
+			// fails -- errorCode/errorText come straight from the server (or the
+			// browser's attempt to reach it), eg. 401 = bad TURN credentials, 701 =
+			// the server itself was unreachable. THIS is usually the single most
+			// useful line for diagnosing "TURN doesn't work from this network"
+			log(
+				'ICE CANDIDATE ERROR:',
+				`url=${e.url}`,
+				`address=${e.address}`,
+				`port=${e.port}`,
+				`errorCode=${e.errorCode}`,
+				`errorText=${e.errorText}`
+			);
+		});
+		pc.addEventListener('iceconnectionstatechange', () => log('iceConnectionState ->', pc.iceConnectionState));
+		pc.addEventListener('icegatheringstatechange', () => log('iceGatheringState ->', pc.iceGatheringState));
+		pc.addEventListener('connectionstatechange', () => log('connectionState ->', pc.connectionState));
+		pc.addEventListener('signalingstatechange', () => log('signalingState ->', pc.signalingState));
+
+		return pc;
+	};
+	window.RTCPeerConnection.prototype = NativeRTCPeerConnection.prototype;
+	window.RTCPeerConnection.generateCertificate = NativeRTCPeerConnection.generateCertificate?.bind(NativeRTCPeerConnection);
+}
+// --- end verbose WebRTC diagnostics ----------------------------------------
+
 // identifies this app in Trystero's public signaling namespace -- not a secret,
 // just keeps our rooms from colliding with unrelated apps using the same relays
 const APP_ID = 'nabla-game-naoto-programming';
@@ -58,8 +139,15 @@ const turnConfigPromise = fetch(TURN_CREDENTIALS_URL)
 		return res.json();
 	})
 	.then(sanitizeIceServers)
+	.then(servers => {
+		console.log(
+			'[online] metered.ca TURN credentials fetched successfully:',
+			servers.map(s => ({ urls: s.urls, hasCredentials: Boolean(s.username || s.credential) }))
+		);
+		return servers;
+	})
 	.catch(err => {
-		console.warn('Falling back to free STUN/TURN servers -- TURN credentials fetch failed:', err);
+		console.warn('[online] Falling back to free STUN/TURN servers -- TURN credentials fetch failed:', err);
 		// Free STUN/TURN servers as fallback for cross-network P2P connections
 		return [
 			{
@@ -103,6 +191,7 @@ let joinToken = 0;
 
 const withConnectTimeout = () => {
 	const timer = setTimeout(() => {
+		console.warn(`[online] connect timeout fired after ${CONNECT_TIMEOUT_MS}ms with no peer -- giving up`);
 		on_connection_error();
 	}, CONNECT_TIMEOUT_MS);
 	return () => clearTimeout(timer);
@@ -121,6 +210,8 @@ const attachMessageActions = () => {
 };
 
 const startRoom = (code, turnConfig) => {
+	console.log(`[online] joining room "${code}" (appId="${APP_ID}") with ${turnConfig.length} ICE server entries`);
+	const startedAt = Date.now();
 	room = joinRoom(
 		{
 			appId: APP_ID,
@@ -137,23 +228,34 @@ const startRoom = (code, turnConfig) => {
 		},
 		code,
 		{
-			onJoinError: () => on_connection_error(),
+			onJoinError: err => {
+				console.error('[online] onJoinError -- Trystero could not join the signaling room at all:', err);
+				on_connection_error();
+			},
 		}
 	);
 	const clearTimeoutFn = withConnectTimeout();
-	room.onPeerJoin = () => {
+	room.onPeerJoin = peerId => {
+		console.log(`[online] onPeerJoin (peer=${peerId}) after ${Date.now() - startedAt}ms -- connection established`);
 		clearTimeoutFn();
 		on_peer_connected();
 	};
-	room.onPeerLeave = () => on_peer_disconnected();
+	room.onPeerLeave = peerId => {
+		console.log(`[online] onPeerLeave (peer=${peerId})`);
+		on_peer_disconnected();
+	};
 	attachMessageActions();
 };
 
 export const js_create_room = () => {
 	const code = generateRoomCode();
+	console.log(`[online] js_create_room: generated code "${code}", waiting on TURN config...`);
 	const token = ++joinToken;
 	turnConfigPromise.then(turnConfig => {
-		if (token !== joinToken) return;
+		if (token !== joinToken) {
+			console.log('[online] js_create_room: superseded before TURN config resolved, not starting room');
+			return;
+		}
 		startRoom(code, turnConfig);
 	});
 
@@ -165,9 +267,13 @@ export const js_join_room = code => {
 	// a manually-typed code so a stray lowercase paste doesn't silently join a
 	// different (nonexistent) room and only fail 30s later via the connect timeout
 	const normalizedCode = code.trim().toUpperCase();
+	console.log(`[online] js_join_room: code "${normalizedCode}", waiting on TURN config...`);
 	const token = ++joinToken;
 	turnConfigPromise.then(turnConfig => {
-		if (token !== joinToken) return;
+		if (token !== joinToken) {
+			console.log('[online] js_join_room: superseded before TURN config resolved, not starting room');
+			return;
+		}
 		startRoom(normalizedCode, turnConfig);
 	});
 };
@@ -181,6 +287,7 @@ export const js_send_action = clicks => {
 };
 
 export const js_leave_room = () => {
+	console.log('[online] js_leave_room');
 	joinToken++; // invalidate any join still waiting on the TURN config fetch
 	if (room) room.leave();
 	room = null;
