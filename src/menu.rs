@@ -376,11 +376,17 @@ impl OnlineMenu {
         let create_button = document.get_element_by_id("button-ONLINE_CREATE").unwrap();
         let create_listener = {
             let create_panel = create_panel.clone();
+            // hidden if the player opens "Join Game" first, then switches to
+            // "Create Game" without connecting -- otherwise both panels (one
+            // with a stale join code input, the other with the new room code)
+            // would show at once
+            let join_panel = join_panel.clone();
             let room_code_display = room_code_display.clone();
             let status = status.clone();
             EventListener::new(&create_button, "click", move |_e| {
                 let code = online::create_room();
                 room_code_display.set_text_content(Some(code.as_str()));
+                join_panel.set_attribute("hidden", "true").ok();
                 create_panel.remove_attribute("hidden").ok();
                 status.set_text_content(Some("Waiting for opponent..."));
             })
@@ -391,8 +397,13 @@ impl OnlineMenu {
             .unwrap();
         let join_show_listener = {
             let join_panel = join_panel.clone();
+            // see create_listener's matching comment -- same reasoning, other direction
+            let create_panel = create_panel.clone();
+            let status = status.clone();
             EventListener::new(&join_show_button, "click", move |_e| {
+                create_panel.set_attribute("hidden", "true").ok();
                 join_panel.remove_attribute("hidden").ok();
+                status.set_text_content(Some(""));
             })
         };
 

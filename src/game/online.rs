@@ -1,5 +1,6 @@
 // wasm-bindgen imports
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 // outer crate imports
 use crate::render::util::RenderId;
 // root imports
@@ -63,15 +64,29 @@ extern "C" {
     fn js_copy_to_clipboard(text: String);
 }
 
-/// starts hosting a room, returning the code to show the player
+/// starts hosting a room, returning the code to show the player. Leaves any
+/// room already open first -- neither online-choice sub-panel is ever hidden
+/// again once shown (see reset_online_panels), so a player can reach this
+/// (eg. by opening "Join Game" after already creating one, or just clicking
+/// "Create Game" twice) without having backed out through the menu first.
+/// Without this, the previous room's Trystero connection would leak (never
+/// left) and a peer connecting to it late could still call on_peer_connected
+/// against whatever ONLINE_SESSION this call replaces it with
 pub fn create_room() -> String {
+    if unsafe { ONLINE_SESSION.is_some() } {
+        js_leave_room();
+    }
     let code = js_create_room();
     unsafe { ONLINE_SESSION = Some(OnlineSession::new(1)) };
     code
 }
 
-/// attempts to join an existing room by its code
+/// attempts to join an existing room by its code -- see create_room's doc on
+/// why any already-open room is left first
 pub fn join_room(code: String) {
+    if unsafe { ONLINE_SESSION.is_some() } {
+        js_leave_room();
+    }
     js_join_room(code);
     unsafe { ONLINE_SESSION = Some(OnlineSession::new(2)) };
 }
@@ -79,6 +94,42 @@ pub fn join_room(code: String) {
 pub fn leave_room() {
     js_leave_room();
     unsafe { ONLINE_SESSION = None };
+    reset_online_panels();
+    if let Some(status) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id("online-status"))
+    {
+        status.set_text_content(Some(""));
+    }
+}
+
+/// hides the create/join sub-panels and clears their room-code/input text.
+/// Menu::activate only ever toggles the top-level "Play Online" panel, never
+/// these two -- left alone, whichever one a previous visit opened (showing a
+/// now-defunct room code, or "Waiting for opponent...") would still be
+/// showing the next time the player returns to "Play Online", as if that old
+/// attempt were still live. Called whenever a room is actually left (see
+/// leave_room, on_peer_disconnected) so the next visit starts clean
+fn reset_online_panels() {
+    let document = match web_sys::window().and_then(|w| w.document()) {
+        Some(document) => document,
+        None => return,
+    };
+    if let Some(el) = document.get_element_by_id("online-create-panel") {
+        el.set_attribute("hidden", "true").ok();
+    }
+    if let Some(el) = document.get_element_by_id("online-join-panel") {
+        el.set_attribute("hidden", "true").ok();
+    }
+    if let Some(el) = document.get_element_by_id("online-room-code") {
+        el.set_text_content(Some(""));
+    }
+    if let Some(input) = document
+        .get_element_by_id("online-join-code-input")
+        .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
+    {
+        input.set_value("");
+    }
 }
 
 pub fn room_code_from_url() -> Option<String> {
@@ -101,11 +152,16 @@ pub fn copy_to_clipboard(text: String) {
 pub fn on_peer_connected() {
     let session = unsafe { ONLINE_SESSION.as_mut() };
     let is_host = match session {
-        Some(session) => {
+        Some(session) if !session.connected => {
             session.connected = true;
             session.local_player_num == 1
         }
-        None => return,
+        // already connected, or no session at all -- ignore. Trystero's
+        // torrent strategy churns through many speculative RTCPeerConnections
+        // per room, and a stray extra onPeerJoin (or a third peer finding the
+        // same room code) must never regenerate and resend a brand new game
+        // over one already in progress
+        _ => return,
     };
 
     if is_host {
@@ -129,6 +185,11 @@ pub fn on_peer_disconnected() {
 
     if was_connected {
         if let Some(menu) = unsafe { MENU.as_ref() } {
+            // clears the now-defunct room code/create-join panels first, so
+            // returning to "Play Online" shows the disconnect message against
+            // the choice screen, not a stale room code implying the old room
+            // is still live
+            reset_online_panels();
             if let Some(status) = web_sys::window()
                 .and_then(|w| w.document())
                 .and_then(|d| d.get_element_by_id("online-status"))
