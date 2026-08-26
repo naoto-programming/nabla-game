@@ -37,8 +37,6 @@ jobs:
 
       - run: yarn install --frozen-lockfile
       - run: yarn build
-        env:
-          METERED_API_KEY: ${{ secrets.METERED_API_KEY }}
 
       - uses: actions/upload-pages-artifact@v3
         with:

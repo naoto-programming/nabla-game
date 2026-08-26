@@ -17,14 +17,13 @@ import {
 
 // --- verbose WebRTC diagnostics -------------------------------------------
 // Trystero only ever surfaces onPeerJoin/onPeerLeave/onJoinError -- none of
-// which say WHY a connection didn't come together (dead TURN server? no ICE
-// candidates at all? blocked signaling? one side never got a working
-// candidate pair?). Wrapping the native RTCPeerConnection is the standard way
-// to see the full picture: every ICE candidate gathered (and its type --
-// host/srflx/relay -- which is exactly what says whether a TURN relay
-// candidate ever showed up at all), every candidate GATHERING error (fires
-// when a STUN/TURN server itself is unreachable or rejects the request), and
-// every connection/ICE/signaling state transition, all timestamped.
+// which say WHY a connection didn't come together (no ICE candidates at all?
+// blocked signaling? one side never got a working candidate pair?). Wrapping
+// the native RTCPeerConnection is the standard way to see the full picture:
+// every ICE candidate gathered (and its type -- host/srflx, which is what
+// says whether a direct P2P path was actually found), every candidate
+// GATHERING error, and every connection/ICE/signaling state transition, all
+// timestamped.
 //
 // To use: open the browser devtools console (F12 or right-click -> Inspect,
 // then the "Console" tab) BEFORE creating or joining a room, then attempt the
@@ -57,9 +56,9 @@ if (typeof RTCPeerConnection !== 'undefined') {
 			}
 			const c = e.candidate;
 			// type: host (direct LAN/local address), srflx (STUN-discovered public
-			// address, ie. direct P2P should work), relay (TURN server relay, ie.
-			// this candidate came from our TURN config actually being used), prflx
-			// (discovered via connectivity checks, rare to see here)
+			// address, ie. direct P2P should work), relay (TURN server relay --
+			// not used by this app), prflx (discovered via connectivity checks,
+			// rare to see here)
 			log(
 				'local candidate:',
 				`type=${c.type}`,
@@ -70,11 +69,9 @@ if (typeof RTCPeerConnection !== 'undefined') {
 			);
 		});
 		pc.addEventListener('icecandidateerror', e => {
-			// fires when gathering a candidate from a specific STUN/TURN server
-			// fails -- errorCode/errorText come straight from the server (or the
-			// browser's attempt to reach it), eg. 401 = bad TURN credentials, 701 =
-			// the server itself was unreachable. THIS is usually the single most
-			// useful line for diagnosing "TURN doesn't work from this network"
+			// fires when gathering a candidate from a specific STUN server fails --
+			// errorCode/errorText come straight from the server (or the browser's
+			// attempt to reach it)
 			log(
 				'ICE CANDIDATE ERROR:',
 				`url=${e.url}`,
@@ -100,77 +97,19 @@ if (typeof RTCPeerConnection !== 'undefined') {
 // just keeps our rooms from colliding with unrelated apps using the same relays
 const APP_ID = 'nabla-game-naoto-programming';
 
-// metered.ca's free-tier TURN fallback (used only when a direct P2P connection
-// can't be established, eg. restrictive NATs). Open Relay Project's old static,
-// no-signup credentials (username/credential both "openrelayproject") were
-// retired -- metered.ca now requires a per-account API key, with the actual
-// iceServers list fetched from their REST endpoint rather than hardcoded.
-// The key itself is still visible to anyone opening devtools on the deployed
-// site (there's no backend to proxy this through), but METERED_API_KEY is
-// substituted at build time (see webpack.config.js's DefinePlugin, fed from
-// the METERED_API_KEY GitHub Actions secret) rather than committed to source,
-// so it isn't sitting in git history / GitHub code search.
-const TURN_CREDENTIALS_URL = `https://nabla-game.metered.live/api/v1/turn/credentials?apiKey=${process.env.METERED_API_KEY}`;
-
-// strips any "?transport=..." query string from a TURN/STUN URL. WebKit's
-// RTCPeerConnection throws "Invalid TURN URL query string" on ANY iceServers
-// entry that has one -- not just that entry, the whole iceServers setup aborts --
-// which silently broke every connection attempt on iOS/Safari while working fine
-// on Chromium (this bit us once already with the old static config). metered.ca's
-// credentials endpoint returns a couple of "?transport=tcp" variants; dropping the
-// query string is safe rather than lossy here, since it just falls back to each
-// scheme's own default transport (UDP for turn:, TLS/TCP for turns:) which is
-// what those variants were asking for anyway.
-const stripTransportParam = url => url.split('?')[0];
-const sanitizeIceServers = servers =>
-	servers.map(server => {
-		const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
-		const deduped = [...new Set(urls.map(stripTransportParam))];
-		return { ...server, urls: deduped.length === 1 ? deduped[0] : deduped };
-	});
-
-// fetched once at module load (not per-room) so it's already resolved (or at
-// least in flight) by the time the user actually clicks Create/Join a few
-// seconds later. Falls back to free STUN/TURN servers when metered.ca is unavailable
-// or when METERED_API_KEY is not configured.
-const turnConfigPromise = fetch(TURN_CREDENTIALS_URL)
-	.then(res => {
-		if (!res.ok) throw new Error(`metered.ca TURN credentials request failed: ${res.status}`);
-		return res.json();
-	})
-	.then(sanitizeIceServers)
-	.then(servers => {
-		console.log(
-			'[online] metered.ca TURN credentials fetched successfully:',
-			servers.map(s => ({ urls: s.urls, hasCredentials: Boolean(s.username || s.credential) }))
-		);
-		return servers;
-	})
-	.catch(err => {
-		console.warn('[online] Falling back to free STUN/TURN servers -- TURN credentials fetch failed:', err);
-		// Free STUN/TURN servers as fallback for cross-network P2P connections
-		return [
-			{
-				urls: 'stun:stun.l.google.com:19302'
-			},
-			{
-				urls: 'stun:stun1.l.google.com:19302'
-			},
-			{
-				urls: 'stun:stun2.l.google.com:19302'
-			},
-			{
-				urls: 'turn:openrelay.metered.ca:80',
-				username: 'openrelayproject',
-				credential: 'openrelayproject'
-			},
-			{
-				urls: 'turn:openrelay.metered.ca:443',
-				username: 'openrelayproject',
-				credential: 'openrelayproject'
-			}
-		];
-	});
+// Pure P2P: no TURN relay. Trystero's torrent strategy already includes its own
+// default STUN servers (Google + Cloudflare, see peer.mjs) even with no
+// turnConfig at all, so direct peer-to-peer connections (host/srflx candidates)
+// work without any configuration here. A previous version of this file used
+// metered.ca's TURN service as a relay fallback for peers behind restrictive
+// NATs, but that requires either a paid plan or staying under a small free
+// bandwidth quota (500MB/month) shared across every player -- easy to exhaust,
+// and once it is, TURN allocate requests just time out silently rather than
+// failing loudly, breaking every connection attempt until the quota resets.
+// That's worse than having no relay fallback at all. Two peers who can't
+// establish a direct path (eg. both behind symmetric NAT) simply won't be
+// able to connect to each other -- there's no code-side fix for that without
+// paying for or hosting a TURN server.
 
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I/L
 
@@ -184,10 +123,6 @@ const CONNECT_TIMEOUT_MS = 45000;
 let room = null;
 let initAction = null;
 let moveAction = null;
-// invalidates a pending startRoom() call if leave/create/join supersedes it
-// before the TURN config fetch resolves (eg. the user cancels or immediately
-// creates a new room while the first fetch was still in flight)
-let joinToken = 0;
 
 const withConnectTimeout = () => {
 	const timer = setTimeout(() => {
@@ -209,21 +144,17 @@ const attachMessageActions = () => {
 	};
 };
 
-const startRoom = (code, turnConfig) => {
-	console.log(`[online] joining room "${code}" (appId="${APP_ID}") with ${turnConfig.length} ICE server entries`);
+const startRoom = code => {
+	console.log(`[online] joining room "${code}" (appId="${APP_ID}"), P2P only (no TURN)`);
 	const startedAt = Date.now();
 	room = joinRoom(
 		{
 			appId: APP_ID,
-			turnConfig,
 			// this strategy defaults trickleIce to false (unlike Trystero's other
-			// strategies), meaning ICE candidates -- including the TURN server
-			// allocation, which itself needs a network round-trip -- must all be
-			// fully gathered before any offer/answer is even sent to the peer.
-			// Enabling it lets candidates (and the connection) start negotiating as
-			// they're found instead of waiting on the slowest one, which matters far
-			// more under real internet latency than it ever showed up in same-machine
-			// testing (that always connected in a few seconds either way)
+			// strategies), meaning ICE candidates must all be fully gathered
+			// before any offer/answer is even sent to the peer. Enabling it lets
+			// candidates (and the connection) start negotiating as they're found
+			// instead of waiting on the slowest one
 			trickleIce: true,
 		},
 		code,
@@ -249,16 +180,7 @@ const startRoom = (code, turnConfig) => {
 
 export const js_create_room = () => {
 	const code = generateRoomCode();
-	console.log(`[online] js_create_room: generated code "${code}", waiting on TURN config...`);
-	const token = ++joinToken;
-	turnConfigPromise.then(turnConfig => {
-		if (token !== joinToken) {
-			console.log('[online] js_create_room: superseded before TURN config resolved, not starting room');
-			return;
-		}
-		startRoom(code, turnConfig);
-	});
-
+	startRoom(code);
 	return code;
 };
 
@@ -267,15 +189,7 @@ export const js_join_room = code => {
 	// a manually-typed code so a stray lowercase paste doesn't silently join a
 	// different (nonexistent) room and only fail 30s later via the connect timeout
 	const normalizedCode = code.trim().toUpperCase();
-	console.log(`[online] js_join_room: code "${normalizedCode}", waiting on TURN config...`);
-	const token = ++joinToken;
-	turnConfigPromise.then(turnConfig => {
-		if (token !== joinToken) {
-			console.log('[online] js_join_room: superseded before TURN config resolved, not starting room');
-			return;
-		}
-		startRoom(normalizedCode, turnConfig);
-	});
+	startRoom(normalizedCode);
 };
 
 export const js_send_init = (deck, hand1, hand2) => {
@@ -288,7 +202,6 @@ export const js_send_action = clicks => {
 
 export const js_leave_room = () => {
 	console.log('[online] js_leave_room');
-	joinToken++; // invalidate any join still waiting on the TURN config fetch
 	if (room) room.leave();
 	room = null;
 	initAction = null;
