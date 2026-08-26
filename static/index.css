@@ -93,6 +93,20 @@ body * {
 	z-index: 4;
 }
 
+/* which build is live -- see js/index.js and webpack.config.js's git-sha
+   DefinePlugin. Deliberately small/low-contrast: useful for confirming a deploy
+   landed without competing for attention with the actual game */
+#version-badge {
+	position: fixed;
+	right: 0.5em;
+	bottom: 0.5em;
+	z-index: 4;
+	font-size: 0.75rem;
+	color: var(--color-dark);
+	opacity: 0.5;
+	pointer-events: none;
+}
+
 #menu > h1.title {
 	margin: auto;
 	margin-top: min(20vh, 20%);

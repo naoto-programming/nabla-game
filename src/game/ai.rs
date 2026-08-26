@@ -62,6 +62,9 @@ struct AiMove {
     /// the actual game-over condition (see side_is_cleared) -- ie. this move wins
     /// the game immediately, regardless of what the heuristic score says
     wins_immediately: bool,
+    /// true if this move shrinks any of the mover's own field slots, or grows any
+    /// of the opponent's -- see hurts_self_or_helps_opponent
+    hurts_self_or_helps_opponent: bool,
 }
 
 fn opponent_of(player_num: u32) -> u32 {
@@ -175,6 +178,30 @@ fn field_owner(target: usize) -> u32 {
     }
 }
 
+/// true if playing `player_num`'s move (which turns `field` into `resulting_field`)
+/// ever shrinks one of `player_num`'s own slots, or grows one of the opponent's --
+/// the two things this game's actual objective (empty the opponent's side, keep
+/// your own non-empty) always makes counter-productive, regardless of which card
+/// produced them. Checks every field slot, so this catches every move type
+/// uniformly -- single-target operators, Nabla/Laplacian's half-field derivative,
+/// Mult/Div's two-slot combine (both the result slot and the sacrificed one), and
+/// BasisCard placement into an empty slot (size 0 -> positive counts as "growing"
+/// that slot, so filling the opponent's empty slot is caught here too) -- without
+/// needing a special case wired into each one individually. A move that merely
+/// leaves a slot's size unchanged (eg. Integral(1) = x, both size 1) is neutral,
+/// not a violation either way
+fn hurts_self_or_helps_opponent(player_num: u32, field: &Field, resulting_field: &Field) -> bool {
+    (0..6).any(|i| {
+        let old_size = field[i].basis.as_ref().map(basis_size).unwrap_or(0);
+        let new_size = resulting_field[i].basis.as_ref().map(basis_size).unwrap_or(0);
+        if field_owner(i) == player_num {
+            new_size < old_size
+        } else {
+            new_size > old_size
+        }
+    })
+}
+
 /// scores replacing `field[target]` with `new_basis`, from `evaluating_player`'s
 /// point of view: rewards clearing/simplifying the OTHER player's slot (progress
 /// toward winning), penalises clearing evaluating_player's own slot. Reused both to
@@ -207,26 +234,21 @@ fn score_replacement(evaluating_player: u32, target: usize, new_basis: &Basis, f
 }
 
 /// scores a Nabla/Laplacian play across all 3 slots of the targeted half, from
-/// `evaluating_player`'s point of view (see score_replacement). Heavily penalizes
-/// applying Nabla/Laplacian to the AI's own half since it clears/simplifies the AI's
-/// own cards, which is strategically disadvantageous.
+/// `evaluating_player`'s point of view (see score_replacement). Whether this ends
+/// up favouring or hurting `evaluating_player` is left entirely to score_replacement
+/// -- applying it to their own half isn't hard-excluded here since a derivative can
+/// occasionally *grow* an expression (eg. product rule), which the general
+/// hurts_self_or_helps_opponent filter (based on actual resulting sizes, not which
+/// half was targeted) already lets through as a legitimate defensive play
 fn score_half(evaluating_player: u32, half_start: usize, is_laplacian: bool, field: &Field) -> f64 {
-    let is_own_half = (evaluating_player == 2 && half_start == 0) || (evaluating_player == 1 && half_start == 3);
-    let base_score: f64 = (half_start..half_start + 3)
+    (half_start..half_start + 3)
         .filter_map(|i| field[i].basis.as_ref().map(|basis| (i, basis)))
         .map(|(i, basis)| {
             let once = derivative(basis);
             let result = if is_laplacian { derivative(&once) } else { once };
             score_replacement(evaluating_player, i, &result, field)
         })
-        .sum();
-    
-    // Heavy penalty for applying Nabla/Laplacian to own half
-    if is_own_half {
-        base_score - 200.0
-    } else {
-        base_score
-    }
+        .sum()
 }
 
 /// applies a Nabla/Laplacian half-field derivative to a cloned field, mirroring
@@ -284,11 +306,14 @@ fn generate_candidates_for(
                         resulting_field[target] = FieldBasis::new(&new_basis);
                         let wins_immediately =
                             side_is_cleared(&resulting_field, opponent_of(player_num));
+                        let hurts_self_or_helps_opponent =
+                            hurts_self_or_helps_opponent(player_num, field, &resulting_field);
                         moves.push(AiMove {
                             clicks: vec![hand_id, RenderId::from(format!("f={target}"))],
                             score: score_replacement(player_num, target, &new_basis, field),
                             resulting_field,
                             wins_immediately,
+                            hurts_self_or_helps_opponent,
                         });
                     }
                 }
@@ -298,17 +323,15 @@ fn generate_candidates_for(
                     let resulting_field = apply_half_to_field(half_start, false, field);
                     let wins_immediately =
                         side_is_cleared(&resulting_field, opponent_of(player_num));
-                    let score = score_half(player_num, half_start, false, field);
-                    // Skip Nabla on own half entirely unless it wins immediately
-                    let is_own_half = (player_num == 2 && half_start == 0) || (player_num == 1 && half_start == 3);
-                    if !is_own_half || wins_immediately {
-                        moves.push(AiMove {
-                            clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
-                            score,
-                            resulting_field,
-                            wins_immediately,
-                        });
-                    }
+                    let hurts_self_or_helps_opponent =
+                        hurts_self_or_helps_opponent(player_num, field, &resulting_field);
+                    moves.push(AiMove {
+                        clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
+                        score: score_half(player_num, half_start, false, field),
+                        resulting_field,
+                        wins_immediately,
+                        hurts_self_or_helps_opponent,
+                    });
                 }
             }
             Card::DerivativeCard(DerivativeCard::Laplacian) if turn_number >= 2 => {
@@ -316,17 +339,15 @@ fn generate_candidates_for(
                     let resulting_field = apply_half_to_field(half_start, true, field);
                     let wins_immediately =
                         side_is_cleared(&resulting_field, opponent_of(player_num));
-                    let score = score_half(player_num, half_start, true, field);
-                    // Skip Laplacian on own half entirely unless it wins immediately
-                    let is_own_half = (player_num == 2 && half_start == 0) || (player_num == 1 && half_start == 3);
-                    if !is_own_half || wins_immediately {
-                        moves.push(AiMove {
-                            clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
-                            score,
-                            resulting_field,
-                            wins_immediately,
-                        });
-                    }
+                    let hurts_self_or_helps_opponent =
+                        hurts_self_or_helps_opponent(player_num, field, &resulting_field);
+                    moves.push(AiMove {
+                        clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
+                        score: score_half(player_num, half_start, true, field),
+                        resulting_field,
+                        wins_immediately,
+                        hurts_self_or_helps_opponent,
+                    });
                 }
             }
             Card::AlgebraicCard(AlgebraicCard::Div | AlgebraicCard::Mult) if include_multiselect => {
@@ -356,6 +377,8 @@ fn generate_candidates_for(
                         };
                         let wins_immediately =
                             side_is_cleared(&resulting_field, opponent_of(player_num));
+                        let hurts_self_or_helps_opponent =
+                            hurts_self_or_helps_opponent(player_num, field, &resulting_field);
                         moves.push(AiMove {
                             clicks: vec![
                                 hand_id,
@@ -366,6 +389,7 @@ fn generate_candidates_for(
                             score,
                             resulting_field,
                             wins_immediately,
+                            hurts_self_or_helps_opponent,
                         });
                     }
                 }
@@ -386,19 +410,14 @@ fn generate_candidates_for(
                         };
                         let wins_immediately =
                             side_is_cleared(&resulting_field, opponent_of(player_num));
-                        let mut score = score_replacement(player_num, target, &result, field);
-                        // Additional penalty for Integral on opponent's side (strengthens opponent)
-                        if matches!(card, Card::DerivativeCard(DerivativeCard::Integral)) {
-                            let is_opponent_side = field_owner(target) != player_num;
-                            if is_opponent_side {
-                                score -= 150.0; // Heavy penalty for strengthening opponent
-                            }
-                        }
+                        let hurts_self_or_helps_opponent =
+                            hurts_self_or_helps_opponent(player_num, field, &resulting_field);
                         moves.push(AiMove {
                             clicks: vec![hand_id, RenderId::from(format!("f={target}"))],
-                            score,
+                            score: score_replacement(player_num, target, &result, field),
                             resulting_field,
                             wins_immediately,
+                            hurts_self_or_helps_opponent,
                         });
                     }
                 }
@@ -521,11 +540,41 @@ fn filter_out_self_defeating_moves(candidates: Vec<AiMove>) -> Vec<AiMove> {
     }
 }
 
+/// removes candidates that attack the AI's own field or strengthen the opponent's
+/// (see hurts_self_or_helps_opponent), unless every remaining candidate shares the
+/// problem. This is a hard rule, not a scoring nudge: the AI must always be able to
+/// attack the opponent's field and defend/strengthen its own, and must never do the
+/// reverse. Placed after tier 1's immediate-win check in choose_move (not before)
+/// so it can never filter out a genuine win -- eg. a Mult/Div combo that sacrifices
+/// one of the AI's own slots to clear the opponent's last one is still a win and
+/// must always be taken -- and after tier 2's immediate-loss check, so a move
+/// that's the only way to survive the opponent's next turn is never discarded here
+/// either; avoiding an actual loss always outranks this
+fn filter_out_moves_that_hurt_self_or_help_opponent(candidates: Vec<AiMove>) -> Vec<AiMove> {
+    let is_safe: Vec<bool> = candidates
+        .iter()
+        .map(|mv| !mv.hurts_self_or_helps_opponent)
+        .collect();
+
+    if is_safe.iter().any(|&safe| safe) {
+        candidates
+            .into_iter()
+            .zip(is_safe)
+            .filter_map(|(mv, safe)| safe.then_some(mv))
+            .collect()
+    } else {
+        candidates
+    }
+}
+
 /// difficulty-scaled selection, applying priority tiers roughly highest-to-lowest:
 /// (1) an immediate win is always taken outright, for every difficulty -- see
 /// wins_immediately; (2) an immediate loss is always avoided if any alternative
-/// exists, for every difficulty -- see filter_out_losing_moves; (3+) among what's
-/// left, Hard looks one ply ahead across *every* remaining candidate (see
+/// exists, for every difficulty -- see filter_out_losing_moves; (3) the AI never
+/// attacks its own field or strengthens the opponent's if there's any alternative,
+/// for every difficulty -- see filter_out_moves_that_hurt_self_or_help_opponent;
+/// (4+) among what's left, Hard looks one ply ahead across *every* remaining
+/// candidate (see
 /// apply_lookahead's doc on why a pool isn't safe here) and always takes the
 /// best-adjusted move, Medium looks ahead too but only across its top
 /// MEDIUM_LOOKAHEAD_POOL candidates and picks randomly from a shrinking top slice of
@@ -549,6 +598,10 @@ fn choose_move(
 
     // tier 2: never hand the opponent a win next turn if there's any alternative
     let candidates = filter_out_losing_moves(candidates, opponent_hand, turn_number);
+
+    // tier 3: never attack our own field or strengthen the opponent's, if there's
+    // any alternative -- see filter_out_moves_that_hurt_self_or_help_opponent
+    let candidates = filter_out_moves_that_hurt_self_or_help_opponent(candidates);
 
     let mut candidates = match difficulty {
         AiDifficulty::Hard => apply_lookahead(candidates, opponent_hand, turn_number, usize::MAX),
@@ -744,6 +797,84 @@ mod perf_tests {
         assert!(
             !side_is_cleared(&chosen.resulting_field, AI_PLAYER_NUM),
             "AI chose a move that instantly loses the game by clearing its own side"
+        );
+    }
+
+    /// direct check of the size-comparison rule hurts_self_or_helps_opponent uses:
+    /// shrinking any of the mover's own slots, or growing any of the opponent's,
+    /// should register as a violation regardless of which slot changed; growing
+    /// your own, shrinking the opponent's, or leaving everything unchanged should not
+    #[test]
+    fn test_hurts_self_or_helps_opponent_detects_every_direction() {
+        let mut field = Field::new();
+        field[0] = FieldBasis::new(&Basis::from(1)); // AI's own slot (player 2), size 1
+        field[3] = FieldBasis::new(&Basis::from(1)); // opponent's slot (player 1), size 1
+
+        // shrinking our own slot (clearing it entirely) is a violation
+        let mut after = field.clone();
+        after[0] = FieldBasis::none();
+        assert!(hurts_self_or_helps_opponent(AI_PLAYER_NUM, &field, &after));
+
+        // growing our own slot (X2 has size 2, see its BasisNode/Pow construction
+        // in Basis::from(BasisCard)) is not a violation
+        let mut after = field.clone();
+        after[0] = FieldBasis::new(&Basis::from(BasisCard::X2));
+        assert!(!hurts_self_or_helps_opponent(AI_PLAYER_NUM, &field, &after));
+
+        // shrinking the opponent's slot (clearing it entirely) is not a violation
+        let mut after = field.clone();
+        after[3] = FieldBasis::none();
+        assert!(!hurts_self_or_helps_opponent(AI_PLAYER_NUM, &field, &after));
+
+        // growing the opponent's slot is a violation
+        let mut after = field.clone();
+        after[3] = FieldBasis::new(&Basis::from(BasisCard::X2));
+        assert!(hurts_self_or_helps_opponent(AI_PLAYER_NUM, &field, &after));
+
+        // no change at all is not a violation
+        assert!(!hurts_self_or_helps_opponent(AI_PLAYER_NUM, &field, &field));
+    }
+
+    /// the AI must never choose a move that attacks its own field (shrinks one of
+    /// its own slots) or strengthens the opponent's field (grows one of theirs),
+    /// whenever a safe alternative exists -- a single Mult/Div card naturally
+    /// generates both directions (which slot it sacrifices, which one it grows) as
+    /// separate candidates from the same (a, b) loop in generate_candidates_for, so
+    /// this only requires giving the AI that one card
+    #[test]
+    fn test_ai_never_attacks_own_field_or_strengthens_opponent_field() {
+        // Field::new() starts every slot occupied -- slots meant to be empty must
+        // be cleared explicitly
+        let mut field = Field::new();
+        field[0] = FieldBasis::new(&Basis::from(1));
+        // kept non-empty so losing field[0] isn't self-defeating
+        field[1] = FieldBasis::new(&Basis::from(BasisCard::X));
+        field[2] = FieldBasis::none();
+        field[3] = FieldBasis::new(&Basis::from(BasisCard::X2));
+        // kept non-empty so clearing field[3] doesn't win outright -- this test
+        // targets tier 3, not tier 1
+        field[4] = FieldBasis::new(&Basis::from(BasisCard::X));
+        field[5] = FieldBasis::none();
+
+        let ai_hand = vec![Card::AlgebraicCard(AlgebraicCard::Mult)];
+        let opponent_hand = vec![Card::BasisCard(BasisCard::X)];
+
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4, true);
+        assert!(
+            candidates.iter().any(|mv| mv.hurts_self_or_helps_opponent),
+            "test setup is wrong: no self-attacking/opponent-strengthening candidate \
+             was generated at all"
+        );
+        assert!(
+            candidates.iter().any(|mv| !mv.hurts_self_or_helps_opponent),
+            "test setup is wrong: no safe alternative candidate was generated at all"
+        );
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4);
+
+        assert!(
+            !chosen.hurts_self_or_helps_opponent,
+            "AI chose a move that attacks its own field or strengthens the \
+             opponent's, despite a safe alternative being available"
         );
     }
 }

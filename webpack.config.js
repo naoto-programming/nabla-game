@@ -1,8 +1,20 @@
 const path = require('path');
+const { execFileSync } = require('child_process');
 const webpack = require('webpack');
 const CopyPlugin = require('copy-webpack-plugin');
 
 const dist = path.resolve(__dirname, 'dist');
+
+// identifies exactly which build is live (shown bottom-right, see js/index.js) --
+// 'unknown' rather than failing the build if git isn't available for some reason
+// (eg. a source tarball without a .git directory)
+const gitCommitSha = (() => {
+	try {
+		return execFileSync('git', ['rev-parse', '--short', 'HEAD']).toString().trim();
+	} catch {
+		return 'unknown';
+	}
+})();
 
 module.exports = {
 	entry: {
@@ -51,6 +63,7 @@ module.exports = {
 		// behind), but at least isn't sitting in plain sight in GitHub code search
 		new webpack.DefinePlugin({
 			'process.env.METERED_API_KEY': JSON.stringify(process.env.METERED_API_KEY || ''),
+			'process.env.GIT_COMMIT_SHA': JSON.stringify(gitCommitSha),
 		}),
 	],
 };
