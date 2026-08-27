@@ -13,6 +13,7 @@ import {
 	on_connection_error,
 	on_init_received,
 	on_action_received,
+	apply_settings_from_host,
 } from '../../../index_bg.js';
 
 // --- verbose WebRTC diagnostics -------------------------------------------
@@ -137,6 +138,10 @@ const attachMessageActions = () => {
 	moveAction = room.makeAction('move');
 
 	initAction.onMessage = data => {
+		// Apply settings from host before starting game
+		if (data.settings) {
+			apply_settings_from_host(data.settings);
+		}
 		on_init_received(data.deck, data.hand1, data.hand2);
 	};
 	moveAction.onMessage = data => {
@@ -192,8 +197,13 @@ export const js_join_room = code => {
 	startRoom(normalizedCode);
 };
 
-export const js_send_init = (deck, hand1, hand2) => {
-	initAction.send({ deck: Array.from(deck), hand1: Array.from(hand1), hand2: Array.from(hand2) });
+export const js_send_init = (deck, hand1, hand2, settings) => {
+	initAction.send({ 
+		deck: Array.from(deck), 
+		hand1: Array.from(hand1), 
+		hand2: Array.from(hand2),
+		settings: Array.from(settings)
+	});
 };
 
 export const js_send_action = clicks => {

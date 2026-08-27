@@ -181,6 +181,14 @@ label.setting-menu {
 	justify-content: space-between;
 	align-content: center;
 }
+/* a class selector (0,1,1) otherwise beats the browser's own `[hidden] {
+   display: none}` (0,1,0) on specificity, so a hidden label.setting-menu (eg.
+   the principal-value picker, shown/hidden by menu.rs based on another
+   select's value) would still render via the rule above instead of actually
+   disappearing */
+label.setting-menu[hidden] {
+	display: none;
+}
 label.setting-menu > input[type='checkbox'] {
 	opacity: 0;
 	height: 1.5rem;

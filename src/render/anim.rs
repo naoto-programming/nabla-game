@@ -115,6 +115,8 @@ pub fn animate_deal_cards(ids: Vec<RenderId>) {
 
     for (i, id) in ids.iter().enumerate() {
         let (deal_id, anim_item) = animate_deal(*id);
+        
+        // Chain animations: each deal triggers the next one
         if i < ids.len() - 1 {
             let next_anim = animate_deal(ids[i + 1]).1;
             if anim_controller.anim_chain.contains_key(&deal_id) {

@@ -198,12 +198,11 @@ pub struct SettingsMenu {
 }
 
 impl SettingsMenu {
-    /// extracts child elements from DOM and adds event listeners for each checkbox
+    /// extracts child elements from DOM and adds event listeners for each checkbox/select
     pub fn new(document: &Document) -> Self {
         let checkboxes: Vec<Element> = vec![
             "DISPLAY_LN_FOR_LOG",
             "ALLOW_LINEAR_DEPENDENCE",
-            "ALLOW_LIMITS_BEYOND_BOUNDS",
             "FULL_COMPUTE",
             "USE_FRACTIONAL_EXPONENTS",
             "LIMIT_FIELD_BASIS",
@@ -232,7 +231,6 @@ impl SettingsMenu {
                     match flag_name {
                         "DISPLAY_LN_FOR_LOG" => DISPLAY_LN_FOR_LOG = flag_value,
                         "ALLOW_LINEAR_DEPENDENCE" => ALLOW_LINEAR_DEPENDENCE = flag_value,
-                        "ALLOW_LIMITS_BEYOND_BOUNDS" => ALLOW_LIMITS_BEYOND_BOUNDS = flag_value,
                         "FULL_COMPUTE" => FULL_COMPUTE = flag_value,
                         "USE_FRACTIONAL_EXPONENTS" => USE_FRACTIONAL_EXPONENTS = flag_value,
                         "LIMIT_FIELD_BASIS" => LIMIT_FIELD_BASIS = flag_value,
@@ -242,6 +240,53 @@ impl SettingsMenu {
                 }
             });
             checkbox_listeners.insert(element.id(), listener);
+        }
+
+        // Handle ALLOW_LIMITS_BEYOND_BOUNDS select
+        let limits_select = document
+            .get_element_by_id("select-ALLOW_LIMITS_BEYOND_BOUNDS")
+            .unwrap();
+        // fetched once, up front -- the closure below is `move` and stored in the
+        // returned SettingsMenu (long-lived), so it can't hold a borrow of
+        // `document` itself (only valid for this constructor call); the specific
+        // element it needs is captured instead
+        let principal_label_element = document.get_element_by_id("label-INVERSE_TRIG_PRINCIPAL_VALUE");
+        let limits_listener = EventListener::new(&limits_select, "change", move |e| {
+            let event_target = e.target().unwrap();
+            let event_target_element = event_target.dyn_ref::<HtmlSelectElement>().unwrap();
+            let value = event_target_element.value();
+            let mode: u8 = value.parse().unwrap_or(1);
+
+            unsafe {
+                ALLOW_LIMITS_BEYOND_BOUNDS = mode;
+            }
+
+            // Show/hide principal value selection based on mode
+            if let Some(label) = &principal_label_element {
+                if mode == 2 {
+                    label.remove_attribute("hidden").ok();
+                } else {
+                    label.set_attribute("hidden", "true").ok();
+                }
+            }
+        });
+        checkbox_listeners.insert(limits_select.id(), limits_listener);
+
+        // Handle INVERSE_TRIG_PRINCIPAL_VALUE select
+        let principal_select = document
+            .get_element_by_id("select-INVERSE_TRIG_PRINCIPAL_VALUE");
+        if let Some(select) = principal_select {
+            let principal_listener = EventListener::new(&select, "change", move |e| {
+                let event_target = e.target().unwrap();
+                let event_target_element = event_target.dyn_ref::<HtmlSelectElement>().unwrap();
+                let value = event_target_element.value();
+                let principal: u8 = value.parse().unwrap_or(0);
+                
+                unsafe {
+                    INVERSE_TRIG_PRINCIPAL_VALUE = principal;
+                }
+            });
+            checkbox_listeners.insert(select.id(), principal_listener);
         }
 
         let colours: Vec<Element> = vec!["PLAYER_1", "PLAYER_2"]

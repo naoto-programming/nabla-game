@@ -194,24 +194,30 @@ pub fn limit(limit_card: &LimitCard) -> impl Fn(&Basis) -> Option<Basis> {
                     }
                     BasisOperator::Acos | BasisOperator::Asin => {
                         let flag = unsafe { ALLOW_LIMITS_BEYOND_BOUNDS };
-                        if flag {
-                            // limit of the actual operand (eg. 2x+1 in acos(2x+1)), not bare x
-                            if base_limit.is_none() {
-                                return None;
-                            }
-                            return limit_arccos_arcsin(&limit_card, &operands[0], base_limit.unwrap());
-                        } else {
-                            match *operator {
-                                // acos(0) = PI/2
-                                BasisOperator::Acos if limit_card == LimitCard::Lim0 => {
-                                    Some(Basis::from(1))
+                        match flag {
+                            0 => {
+                                // Disabled - only allow specific known limits
+                                match *operator {
+                                    // acos(0) = PI/2
+                                    BasisOperator::Acos if limit_card == LimitCard::Lim0 => {
+                                        Some(Basis::from(1))
+                                    }
+                                    // asin(0) = 0
+                                    BasisOperator::Asin if limit_card == LimitCard::Lim0 => {
+                                        Some(Basis::from(0))
+                                    }
+                                    _ => None,
                                 }
-                                // asin(0) = 0
-                                BasisOperator::Asin if limit_card == LimitCard::Lim0 => {
-                                    Some(Basis::from(0))
-                                }
-                                _ => None,
                             }
+                            1 | 2 => {
+                                // Enabled or range selection mode
+                                // limit of the actual operand (eg. 2x+1 in acos(2x+1)), not bare x
+                                if base_limit.is_none() {
+                                    return None;
+                                }
+                                return limit_arccos_arcsin(&limit_card, &operands[0], base_limit.unwrap());
+                            }
+                            _ => None,
                         }
                     }
                     // limit of an unresolved Inv node (inverse() falls back to this

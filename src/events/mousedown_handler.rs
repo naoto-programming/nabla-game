@@ -1,5 +1,3 @@
-// std imports
-use std::cmp::min;
 // outer crate imports
 use crate::basis::structs::*;
 use crate::game::cards::*;
@@ -283,6 +281,7 @@ fn handle_derivative_card(field: &mut Field, card: Card, i: usize) {
 }
 
 /// handles multiselect turn phase, player can choose multiple targets of selected operator (Mult/Div)
+/// Only allows field+hand combinations (field×field is deprecated)
 fn multi_select_phase(multi_operator: Card, id: RenderId, player_num: u32) {
     let game = unsafe { GAME.as_mut().unwrap() };
     let player = if &game.turn.number % 2 == 0 {
@@ -294,13 +293,19 @@ fn multi_select_phase(multi_operator: Card, id: RenderId, player_num: u32) {
     let selected = &mut game.active.selected;
     let (id_key, id_val) = id.key_val();
 
-    // add selected field Basis to list of active selections
-    if id_key == "f"
-        || (id_key == format!("p{}", player_num) && matches!(player[id_val], Card::BasisCard(_)))
-    {
+    // Only allow field+hand combinations, not field×field
+    // Count how many field slots are already selected
+    let field_count = selected.iter().filter(|sel_id| sel_id.is_field()).count();
+    
+    // add selected field Basis to list of active selections (only if no field selected yet)
+    if id_key == "f" && field_count == 0 {
         selected.push(id);
         render::draw();
         // console::log_1(&JsValue::from(format!("added to multiselect: {}", id)));
+    } else if id_key == format!("p{}", player_num) && matches!(player[id_val], Card::BasisCard(_)) {
+        // Allow hand cards
+        selected.push(id);
+        render::draw();
     }
 
     let has_at_least_1_field_basis = selected.iter().find(|sel_id| sel_id.is_field()).is_some();
@@ -394,9 +399,13 @@ fn end_turn() {
     }
 
     let deck = &mut game.deck;
-    // replenish from deck if possible
+    // replenish from deck if possible -- saturating_sub guards against a hand
+    // somehow already at or past 7 (shouldn't happen, but a plain `7 -
+    // player.len()` would panic on underflow in that case instead of just
+    // correctly dealing zero cards)
+    let cards_to_deal = 7usize.saturating_sub(player.len()).min(deck.len());
     anim::animate_deal_cards(
-        (player.len()..min(deck.len(), 7))
+        (player.len()..player.len() + cards_to_deal)
             .map(|i| {
                 RenderId::from(format!(
                     "p{player_num}={val}",

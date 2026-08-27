@@ -55,7 +55,7 @@ extern "C" {
     #[wasm_bindgen(js_name = js_leave_room)]
     fn js_leave_room();
     #[wasm_bindgen(js_name = js_send_init)]
-    fn js_send_init(deck: Vec<u8>, hand1: Vec<u8>, hand2: Vec<u8>);
+    fn js_send_init(deck: Vec<u8>, hand1: Vec<u8>, hand2: Vec<u8>, settings: Vec<u8>);
     #[wasm_bindgen(js_name = js_send_action)]
     fn js_send_action(clicks: Vec<String>);
     #[wasm_bindgen(js_name = getRoomCodeFromUrl)]
@@ -169,8 +169,41 @@ pub fn on_peer_connected() {
         let deck = crate::game::card_encoding::cards_to_bytes(&game.deck);
         let hand1 = crate::game::card_encoding::cards_to_bytes(&game.player_1);
         let hand2 = crate::game::card_encoding::cards_to_bytes(&game.player_2);
-        js_send_init(deck, hand1, hand2);
+        
+        // Serialize settings to bytes (mixed bool and u8 array)
+        let settings_bytes = unsafe {
+            vec![
+                if crate::game::flags::ALLOW_LINEAR_DEPENDENCE { 1 } else { 0 },
+                crate::game::flags::ALLOW_LIMITS_BEYOND_BOUNDS,
+                crate::game::flags::INVERSE_TRIG_PRINCIPAL_VALUE,
+                if crate::game::flags::FULL_COMPUTE { 1 } else { 0 },
+                if crate::game::flags::DISPLAY_LN_FOR_LOG { 1 } else { 0 },
+                if crate::game::flags::USE_FRACTIONAL_EXPONENTS { 1 } else { 0 },
+                if crate::game::flags::LIMIT_FIELD_BASIS { 1 } else { 0 },
+                if crate::game::flags::CONFIRM_BEFORE_PLAY { 1 } else { 0 },
+            ]
+        };
+        
+        js_send_init(deck, hand1, hand2, settings_bytes);
         start_online_game(game);
+    }
+}
+
+/// Apply settings received from host (called from JS)
+#[wasm_bindgen]
+pub fn apply_settings_from_host(settings_bytes: Vec<u8>) {
+    if settings_bytes.len() >= 8 {
+        let settings = crate::game::flags::GameSettings {
+            allow_linear_dependence: settings_bytes[0] == 1,
+            allow_limits_beyond_bounds: settings_bytes[1],
+            inverse_trig_principal_value: settings_bytes[2],
+            full_compute: settings_bytes[3] == 1,
+            display_ln_for_log: settings_bytes[4] == 1,
+            use_fractional_exponents: settings_bytes[5] == 1,
+            limit_field_basis: settings_bytes[6] == 1,
+            confirm_before_play: settings_bytes[7] == 1,
+        };
+        crate::game::flags::apply_settings(&settings);
     }
 }
 

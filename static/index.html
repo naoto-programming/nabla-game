@@ -60,16 +60,28 @@
 							Allow linearly dependent field bases ? (ie. bases that are scalar multiples of
 							each other, like x and 2x)
 						</h3>
-						<input id="checkbox-ALLOW_LINEAR_DEPENDENCE" type="checkbox" checked />
+						<input id="checkbox-ALLOW_LINEAR_DEPENDENCE" type="checkbox" />
 						<span class="checkbox"></span>
 					</label>
-					<label class="setting-menu" for="checkbox-ALLOW_LIMITS_BEYOND_BOUNDS">
+					<label class="setting-menu" for="select-ALLOW_LIMITS_BEYOND_BOUNDS">
 						<h3 data-i18n="settings.limitsBeyondBounds">
 							Allow limits outside a function's domain ? (ie. arccos/arcsin are only defined
 							for inputs in [-1, 1], so arccos(∞) is normally invalid)
 						</h3>
-						<input id="checkbox-ALLOW_LIMITS_BEYOND_BOUNDS" type="checkbox" checked />
-						<span class="checkbox"></span>
+						<select id="select-ALLOW_LIMITS_BEYOND_BOUNDS">
+							<option value="0">Disabled</option>
+							<option value="1" selected>Enabled</option>
+							<option value="2">Range Selection Mode</option>
+						</select>
+					</label>
+					<label class="setting-menu" for="select-INVERSE_TRIG_PRINCIPAL_VALUE" id="label-INVERSE_TRIG_PRINCIPAL_VALUE" hidden>
+						<h3 data-i18n="settings.inverseTrigPrincipalValue">
+							Principal value selection for inverse trig functions
+						</h3>
+						<select id="select-INVERSE_TRIG_PRINCIPAL_VALUE">
+							<option value="0" selected>Standard [0, π] for arccos, [-π/2, π/2] for arcsin</option>
+							<option value="1">Alternative ranges</option>
+						</select>
 					</label>
 					<label class="setting-menu" for="checkbox-FULL_COMPUTE">
 						<h3 data-i18n="settings.fullCompute">Perform all computations ?</h3>
