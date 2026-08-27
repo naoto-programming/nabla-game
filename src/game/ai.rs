@@ -233,8 +233,10 @@ fn hurts_self_or_helps_opponent(player_num: u32, field: &Field, resulting_field:
 /// point of view: rewards clearing/simplifying the OTHER player's slot (progress
 /// toward winning), penalises clearing evaluating_player's own slot. Reused both to
 /// score the AI's own candidates (evaluating_player = AI_PLAYER_NUM) and to predict
-/// the human's best reply one ply ahead (evaluating_player = 1) -- see apply_lookahead
-/// Enhanced with strategic scoring to prioritize optimal play
+/// the human's best reply one ply ahead (evaluating_player = 1) -- see apply_lookahead.
+/// Deliberately doesn't factor in how many slots remain occupied overall -- see
+/// strategic_slot_bonus, added by each caller separately (once per candidate, not
+/// once per changed slot; see its own doc for why that split matters)
 fn score_replacement(evaluating_player: u32, target: usize, new_basis: &Basis, field: &Field) -> f64 {
     let is_opponent_side = field_owner(target) != evaluating_player;
     let old_size = field[target].basis.as_ref().map(basis_size).unwrap_or(0);
@@ -266,37 +268,31 @@ fn score_replacement(evaluating_player: u32, target: usize, new_basis: &Basis, f
             0.0 // neutral change
         };
     }
-    
-    // Strategic bonus: count how many opponent slots remain after this move
-    let opponent_slots_remaining: u32 = (0..6)
-        .filter(|&i| field_owner(i) != evaluating_player)
-        .filter(|&i| {
-            if i == target {
-                new_size > 0
-            } else {
-                field[i].basis.is_some()
-            }
-        })
-        .count() as u32;
-    
-    // Bonus for reducing opponent's remaining slots (closer to victory)
-    score += (3.0 - opponent_slots_remaining as f64) * 15.0;
-    
-    // Penalty for reducing own remaining slots (closer to defeat)
-    let own_slots_remaining: u32 = (0..6)
-        .filter(|&i| field_owner(i) == evaluating_player)
-        .filter(|&i| {
-            if i == target {
-                new_size > 0
-            } else {
-                field[i].basis.is_some()
-            }
-        })
-        .count() as u32;
-    
-    score -= (3.0 - own_slots_remaining as f64) * 25.0;
-    
     score
+}
+
+/// bonus/penalty for how many slots remain occupied on each side in
+/// `resulting_field`, from `evaluating_player`'s point of view: fewer occupied
+/// opponent slots is rewarded (closer to winning), fewer occupied own slots is
+/// penalised more heavily (closer to losing). Takes the true resulting field
+/// directly rather than reconstructing a hypothetical one from a single changed
+/// target -- Mult/Div changes TWO slots in one move (the merged result and the
+/// sacrificed slot), and computing this per-target from score_replacement (as an
+/// earlier version did) meant calling it once per changed slot, each blind to the
+/// other slot's simultaneous change -- eg. scoring the kept slot's call as if the
+/// sacrificed slot were still occupied, and vice versa -- systematically
+/// mis-valuing exactly the moves this bonus exists to rank (own-side Mult/Div
+/// consolidation moves) whenever the mover's own side wasn't already fully
+/// occupied. Called exactly once per candidate, regardless of how many slots it
+/// changes, so it can't double-count
+fn strategic_slot_bonus(evaluating_player: u32, resulting_field: &Field) -> f64 {
+    let opponent_slots_remaining = (0..6)
+        .filter(|&i| field_owner(i) != evaluating_player && resulting_field[i].basis.is_some())
+        .count() as f64;
+    let own_slots_remaining = (0..6)
+        .filter(|&i| field_owner(i) == evaluating_player && resulting_field[i].basis.is_some())
+        .count() as f64;
+    (3.0 - opponent_slots_remaining) * 15.0 - (3.0 - own_slots_remaining) * 25.0
 }
 
 /// scores a Nabla/Laplacian play across all 3 slots of the targeted half, from
@@ -306,15 +302,22 @@ fn score_replacement(evaluating_player: u32, target: usize, new_basis: &Basis, f
 /// occasionally *grow* an expression (eg. product rule), which the general
 /// hurts_self_or_helps_opponent filter (based on actual resulting sizes, not which
 /// half was targeted) already lets through as a legitimate defensive play
-fn score_half(evaluating_player: u32, half_start: usize, is_laplacian: bool, field: &Field) -> f64 {
-    (half_start..half_start + 3)
+fn score_half(
+    evaluating_player: u32,
+    half_start: usize,
+    is_laplacian: bool,
+    field: &Field,
+    resulting_field: &Field,
+) -> f64 {
+    let per_slot: f64 = (half_start..half_start + 3)
         .filter_map(|i| field[i].basis.as_ref().map(|basis| (i, basis)))
         .map(|(i, basis)| {
             let once = derivative(basis);
             let result = if is_laplacian { derivative(&once) } else { once };
             score_replacement(evaluating_player, i, &result, field)
         })
-        .sum()
+        .sum();
+    per_slot + strategic_slot_bonus(evaluating_player, resulting_field)
 }
 
 /// applies a Nabla/Laplacian half-field derivative to a cloned field, mirroring
@@ -376,7 +379,8 @@ fn generate_candidates_for(
                             hurts_self_or_helps_opponent(player_num, field, &resulting_field);
                         moves.push(AiMove {
                             clicks: vec![hand_id, RenderId::from(format!("f={target}"))],
-                            score: score_replacement(player_num, target, &new_basis, field),
+                            score: score_replacement(player_num, target, &new_basis, field)
+                                + strategic_slot_bonus(player_num, &resulting_field),
                             resulting_field,
                             wins_immediately,
                             hurts_self_or_helps_opponent,
@@ -393,7 +397,7 @@ fn generate_candidates_for(
                         hurts_self_or_helps_opponent(player_num, field, &resulting_field);
                     moves.push(AiMove {
                         clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
-                        score: score_half(player_num, half_start, false, field),
+                        score: score_half(player_num, half_start, false, field, &resulting_field),
                         resulting_field,
                         wins_immediately,
                         hurts_self_or_helps_opponent,
@@ -409,7 +413,7 @@ fn generate_candidates_for(
                         hurts_self_or_helps_opponent(player_num, field, &resulting_field);
                     moves.push(AiMove {
                         clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
-                        score: score_half(player_num, half_start, true, field),
+                        score: score_half(player_num, half_start, true, field, &resulting_field),
                         resulting_field,
                         wins_immediately,
                         hurts_self_or_helps_opponent,
@@ -441,13 +445,6 @@ fn generate_candidates_for(
                             field[b].basis.as_ref().unwrap().clone(),
                         ];
                         let result = apply_multi_card(card, bases);
-                        // both operand slots get cleared first; the result (if
-                        // non-zero) then goes back into `a` -- `b` is always lost, so
-                        // it must be scored too, or the AI can't see that it's
-                        // sacrificing (say) its own slot to simplify an opponent's
-                        let score = score_replacement(player_num, a, &result, field)
-                            + score_replacement(player_num, b, &Basis::from(0), field)
-                            - 1.0; // drop the double-counted baseline from scoring twice
                         let mut resulting_field = field.clone();
                         resulting_field[b] = FieldBasis::none();
                         resulting_field[a] = if result.is_num(0) {
@@ -455,6 +452,17 @@ fn generate_candidates_for(
                         } else {
                             FieldBasis::new(&result)
                         };
+                        // both operand slots get cleared first; the result (if
+                        // non-zero) then goes back into `a` -- `b` is always lost, so
+                        // it must be scored too, or the AI can't see that it's
+                        // sacrificing (say) its own slot to simplify an opponent's.
+                        // strategic_slot_bonus is added once, from the true combined
+                        // resulting_field, not once per score_replacement call -- see
+                        // its doc for why that split matters specifically here
+                        let score = score_replacement(player_num, a, &result, field)
+                            + score_replacement(player_num, b, &Basis::from(0), field)
+                            - 1.0 // drop the double-counted baseline from scoring twice
+                            + strategic_slot_bonus(player_num, &resulting_field);
                         let wins_immediately =
                             side_is_cleared(&resulting_field, opponent_of(player_num));
                         let hurts_self_or_helps_opponent =
@@ -494,7 +502,8 @@ fn generate_candidates_for(
                             hurts_self_or_helps_opponent(player_num, field, &resulting_field);
                         moves.push(AiMove {
                             clicks: vec![hand_id, RenderId::from(format!("f={target}"))],
-                            score: score_replacement(player_num, target, &result, field),
+                            score: score_replacement(player_num, target, &result, field)
+                                + strategic_slot_bonus(player_num, &resulting_field),
                             resulting_field,
                             wins_immediately,
                             hurts_self_or_helps_opponent,
@@ -786,6 +795,7 @@ fn choose_move(
 #[cfg(test)]
 mod perf_tests {
     use super::*;
+    use crate::basis::builders::SqrtBasisNode;
     use crate::math::fraction::Fraction;
     use crate::math::logarithm::logarithm;
     use crate::math::util::function_composition;
@@ -1177,5 +1187,241 @@ mod perf_tests {
                 );
             }
         }
+    }
+
+    /// broad randomized search for the "AI attacks its own field" report: across
+    /// many random (field, hand) combinations, if the AI's chosen move hurts
+    /// itself/helps the opponent, was there an alternative that satisfied tier 0
+    /// (not self-defeating), tier 2 (doesn't hand the opponent an immediate win
+    /// next turn) AND tier 3 (doesn't hurt self/help opponent) all at once? If so,
+    /// choose_move picked a strictly worse move than one that was available --
+    /// a real bug, not just tier 2/tier 0 correctly outranking tier 3 when every
+    /// tier-3-safe candidate was already eliminated by a higher-priority tier
+    #[test]
+    fn test_ai_never_hurts_itself_when_a_fully_safe_alternative_exists() {
+        let basis_pool: Vec<Basis> = vec![
+            Basis::from(1),
+            Basis::from(BasisCard::X),
+            Basis::from(BasisCard::X2),
+            Basis::from(BasisCard::Sin),
+            Basis::from(BasisCard::Cos),
+            Basis::from(BasisCard::E),
+            derivative(&Basis::from(BasisCard::X2)),
+            crate::math::integral::integral(&Basis::from(BasisCard::X2)),
+            crate::math::integral::integral(&crate::math::integral::integral(&Basis::from(
+                BasisCard::X,
+            ))),
+        ];
+        let card_pool: Vec<Card> = vec![
+            Card::BasisCard(BasisCard::One),
+            Card::BasisCard(BasisCard::X),
+            Card::BasisCard(BasisCard::X2),
+            Card::BasisCard(BasisCard::Cos),
+            Card::BasisCard(BasisCard::Sin),
+            Card::BasisCard(BasisCard::E),
+            Card::AlgebraicCard(AlgebraicCard::Div),
+            Card::AlgebraicCard(AlgebraicCard::Mult),
+            Card::AlgebraicCard(AlgebraicCard::Sqrt),
+            Card::AlgebraicCard(AlgebraicCard::Inverse),
+            Card::AlgebraicCard(AlgebraicCard::Log),
+            Card::DerivativeCard(DerivativeCard::Derivative),
+            Card::DerivativeCard(DerivativeCard::Integral),
+            Card::DerivativeCard(DerivativeCard::Nabla),
+            Card::DerivativeCard(DerivativeCard::Laplacian),
+            Card::LimitCard(LimitCard::LimPosInf),
+            Card::LimitCard(LimitCard::LimNegInf),
+            Card::LimitCard(LimitCard::Lim0),
+            Card::LimitCard(LimitCard::Liminf),
+            Card::LimitCard(LimitCard::Limsup),
+        ];
+
+        let mut rng = rand::thread_rng();
+        let mut violations: Vec<String> = vec![];
+        let mut checked = 0;
+
+        for trial in 0..3000 {
+            let mut field = Field::new();
+            for i in 0..6 {
+                if rng.gen_bool(0.2) {
+                    field[i] = FieldBasis::none();
+                } else {
+                    let basis = basis_pool[rng.gen_range(0..basis_pool.len())].clone();
+                    field[i] = FieldBasis::new(&basis);
+                }
+            }
+            // skip fields where someone has already won -- not a real decision point
+            if side_is_cleared(&field, 1) || side_is_cleared(&field, 2) {
+                continue;
+            }
+
+            let hand_size = rng.gen_range(3..=7);
+            let ai_hand: Vec<Card> = (0..hand_size)
+                .map(|_| card_pool[rng.gen_range(0..card_pool.len())].clone())
+                .collect();
+            let opponent_hand: Vec<Card> = (0..hand_size)
+                .map(|_| card_pool[rng.gen_range(0..card_pool.len())].clone())
+                .collect();
+            let turn_number = rng.gen_range(2..20); // >=2 so Laplacian is in play
+
+            let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, turn_number, true);
+            if candidates.is_empty() {
+                continue;
+            }
+            checked += 1;
+
+            for difficulty in [AiDifficulty::Easy, AiDifficulty::Medium, AiDifficulty::Hard] {
+                let candidates_for_difficulty =
+                    generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, turn_number, true);
+                let chosen =
+                    choose_move(candidates_for_difficulty, &opponent_hand, difficulty, turn_number, &field);
+                if !chosen.hurts_self_or_helps_opponent {
+                    continue;
+                }
+                let better_exists = candidates.iter().any(|mv| {
+                    !mv.hurts_self_or_helps_opponent
+                        && !side_is_cleared(&mv.resulting_field, AI_PLAYER_NUM)
+                        && !has_winning_move(1, &opponent_hand, &mv.resulting_field, turn_number + 1)
+                });
+                if better_exists {
+                    violations.push(format!(
+                        "trial={trial} difficulty={difficulty:?}: chosen hurt self/helped \
+                         opponent despite a fully-safe alternative existing -- field={:?} \
+                         ai_hand={:?} chosen.clicks={:?}",
+                        field, ai_hand, chosen.clicks
+                    ));
+                }
+            }
+        }
+
+        println!("checked {checked} trials with at least one candidate");
+        for v in &violations {
+            println!("{v}");
+        }
+        assert!(
+            violations.is_empty(),
+            "found {} case(s) where the AI chose a self-harming move despite a fully-safe \
+             alternative -- see stdout for details",
+            violations.len()
+        );
+    }
+
+    /// mirrors handle_derivative_card's (events/mousedown_handler.rs) exact shortcut
+    /// logic: if the target index was visited before, reuse the cached history
+    /// value instead of recomputing. Used to check whether that cached value ever
+    /// diverges from what generate_candidates_for's simulation would have
+    /// predicted for the same move (it always computes fresh via apply_card,
+    /// never consulting history) -- see the doc on
+    /// test_derivative_integral_round_trip_matches_a_fresh_computation
+    fn apply_derivative_card_like_real_execution(field: &mut Field, i: usize, card: Card) {
+        let is_laplacian = matches!(card, Card::DerivativeCard(DerivativeCard::Laplacian));
+        let is_integral = matches!(card, Card::DerivativeCard(DerivativeCard::Integral));
+        let is_derivative = matches!(
+            card,
+            Card::DerivativeCard(DerivativeCard::Derivative | DerivativeCard::Nabla)
+        );
+        if field[i].has_value(&card) {
+            if is_derivative || is_laplacian {
+                field.derivative(i, None);
+            } else if is_integral {
+                field.integral(i, None);
+            }
+            if is_laplacian {
+                field.derivative(i, None);
+            }
+        } else {
+            let result_basis = apply_card(&card)(field[i].basis.as_ref().unwrap());
+            if is_derivative || is_laplacian {
+                field.derivative(i, Some(result_basis.clone()));
+            } else if is_integral {
+                field.integral(i, Some(result_basis.clone()));
+            }
+            if is_laplacian {
+                let second = apply_card(&card)(&result_basis);
+                field.derivative(i, Some(second));
+            }
+        }
+    }
+
+    /// the AI's own candidate generation (generate_candidates_for) always scores a
+    /// Derivative/Integral/Nabla play by computing apply_card(&card)(CURRENT basis)
+    /// fresh -- it never consults FieldBasis::history. But the REAL execution path
+    /// (handle_derivative_card) takes a shortcut whenever the target index was
+    /// visited before: instead of recomputing, it jumps straight to the cached
+    /// value from that earlier visit (see Field::derivative/integral). Those two
+    /// can only ever agree if this CAS's derivative and integral are exact,
+    /// consistent inverses of each other for every expression the game can
+    /// produce -- if they're not (eg. a normalization difference, or the "Not yet
+    /// implemented" integration fallback in math/integral.rs leaving an
+    /// unsimplified wrapper node), the AI would score a move against one value
+    /// while the real game applies a completely different one, which could easily
+    /// look like "the AI attacked its own field" even though hurts_self_or_helps_opponent
+    /// correctly evaluated the (wrong) predicted outcome
+    #[test]
+    fn test_derivative_integral_round_trip_matches_a_fresh_computation() {
+        let starting_bases = vec![
+            Basis::from(1),
+            Basis::from(BasisCard::X),
+            Basis::from(BasisCard::X2),
+            Basis::from(BasisCard::Sin),
+            Basis::from(BasisCard::Cos),
+            Basis::from(BasisCard::E),
+            // Sqrt introduces a Pow(1/2) node -- integrating one of these enough
+            // times is what actually hit integral.rs's "Not yet implemented"
+            // fallback (an unsimplified IntBasisNode wrapper) during the earlier
+            // randomized search, so it gets its own round-trip check here
+            SqrtBasisNode(1, &Basis::from(BasisCard::X)),
+            SqrtBasisNode(1, &Basis::from(BasisCard::X2)),
+        ];
+
+        let mut mismatches: Vec<String> = vec![];
+
+        for start in &starting_bases {
+            // integrate up several levels (as a real multi-turn game would),
+            // building real history via the same path handle_derivative_card uses.
+            // 6 levels (deeper than the 4 used for the simpler bases above) to
+            // reliably reach the LIATE fallback for the sqrt-based starting bases
+            let mut field = Field::new();
+            field[0] = FieldBasis::new(start);
+            for _level in 0..6 {
+                apply_derivative_card_like_real_execution(
+                    &mut field,
+                    0,
+                    Card::DerivativeCard(DerivativeCard::Integral),
+                );
+            }
+
+            // now come back down: at each step, compare what the real shortcut
+            // produces against a fresh derivative computed directly from the
+            // basis the AI would have seen (ie. what it actually scored)
+            for _level in 0..6 {
+                let basis_before = field[0].basis.clone().unwrap();
+                let predicted_by_ai = derivative(&basis_before);
+
+                apply_derivative_card_like_real_execution(
+                    &mut field,
+                    0,
+                    Card::DerivativeCard(DerivativeCard::Derivative),
+                );
+                let actual_after_real_execution = field[0].basis.clone().unwrap();
+
+                if predicted_by_ai != actual_after_real_execution {
+                    mismatches.push(format!(
+                        "start={start:?}: from {basis_before:?}, AI would have predicted \
+                         {predicted_by_ai:?} but real execution (history shortcut) produced \
+                         {actual_after_real_execution:?}"
+                    ));
+                }
+            }
+        }
+
+        for m in &mismatches {
+            println!("{m}");
+        }
+        assert!(
+            mismatches.is_empty(),
+            "found {} case(s) where the history shortcut disagrees with a fresh computation \
+             -- see stdout for details",
+            mismatches.len()
+        );
     }
 }
