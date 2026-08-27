@@ -302,6 +302,43 @@ fn strategic_slot_bonus(evaluating_player: u32, resulting_field: &Field) -> f64 
     (3.0 - opponent_slots_remaining) * 15.0 - (3.0 - own_slots_remaining) * 25.0
 }
 
+/// which broad family `card` belongs to, for flexibility_bonus's purposes --
+/// coarse enough to group "cards that do roughly the same kind of thing", not a
+/// full breakdown of every distinct card
+fn hand_category(card: &Card) -> &'static str {
+    match card {
+        Card::BasisCard(BasisCard::Zero) => "zero", // never itself placeable, but usable as a Mult/Div operand
+        Card::BasisCard(_) => "basis",
+        Card::AlgebraicCard(AlgebraicCard::Mult | AlgebraicCard::Div) => "multdiv",
+        Card::AlgebraicCard(_) => "algebraic_single",
+        Card::DerivativeCard(DerivativeCard::Nabla | DerivativeCard::Laplacian) => "half_field",
+        Card::DerivativeCard(_) => "derivative_single",
+        Card::LimitCard(_) => "limit",
+    }
+}
+
+/// small tie-breaking bonus for how many DISTINCT card categories (see
+/// hand_category) remain in hand after playing this move's card(s) --
+/// `used_indices` are the hand positions this move consumes (just the operator
+/// for most cards; the operator plus a BasisCard operand for a field+hand-card
+/// Mult/Div play). Using up the only card of some kind (eg. your one Mult/Div)
+/// narrows next turn's options more than using up a duplicate of a kind you
+/// still hold several of -- a real signal not already captured by
+/// score_replacement (which only looks at the field) or strategic_slot_bonus
+/// (which only looks at occupied slot counts), neither of which knows anything
+/// about the hand that's left over. Deliberately small relative to those two
+/// (hundreds of points for a clean opponent clear): a tie-breaker between
+/// otherwise-similar moves, not a driver of the AI's core priorities
+fn flexibility_bonus(hand: &[Card], used_indices: &[usize]) -> f64 {
+    let remaining_categories: std::collections::HashSet<&'static str> = hand
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !used_indices.contains(i))
+        .map(|(_, card)| hand_category(card))
+        .collect();
+    remaining_categories.len() as f64 * 3.0
+}
+
 /// scores a Nabla/Laplacian play across all 3 slots of the targeted half, from
 /// `evaluating_player`'s point of view (see score_replacement). Whether this ends
 /// up favouring or hurting `evaluating_player` is left entirely to score_replacement
@@ -385,7 +422,8 @@ fn generate_candidates_for(
                             clicks: vec![hand_id, RenderId::from(format!("f={target}"))],
                             score: score_replacement(player_num, target, &new_basis, field)
                                 + strategic_slot_bonus(player_num, &resulting_field)
-                                + situation_bonus,
+                                + situation_bonus
+                                + flexibility_bonus(hand, &[i]),
                             resulting_field,
                             wins_immediately,
                             hurts_self_or_helps_opponent,
@@ -403,7 +441,8 @@ fn generate_candidates_for(
                     moves.push(AiMove {
                         clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
                         score: score_half(player_num, half_start, false, field, &resulting_field)
-                            + situation_bonus,
+                            + situation_bonus
+                            + flexibility_bonus(hand, &[i]),
                         resulting_field,
                         wins_immediately,
                         hurts_self_or_helps_opponent,
@@ -420,7 +459,8 @@ fn generate_candidates_for(
                     moves.push(AiMove {
                         clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
                         score: score_half(player_num, half_start, true, field, &resulting_field)
-                            + situation_bonus,
+                            + situation_bonus
+                            + flexibility_bonus(hand, &[i]),
                         resulting_field,
                         wins_immediately,
                         hurts_self_or_helps_opponent,
@@ -481,7 +521,8 @@ fn generate_candidates_for(
                             // no separate bonus is added here on top of it
                             let score = score_replacement(player_num, target, &result, field)
                                 + strategic_slot_bonus(player_num, &resulting_field)
-                                + situation_bonus;
+                                + situation_bonus
+                                + flexibility_bonus(hand, &[i, hand_index]);
                             let wins_immediately =
                                 side_is_cleared(&resulting_field, opponent_of(player_num));
                             let hurts_self_or_helps_opponent =
@@ -528,7 +569,8 @@ fn generate_candidates_for(
                             score: score_replacement(player_num, target, &result, field)
                                 + strategic_slot_bonus(player_num, &resulting_field)
                                 + limit_bonus
-                                + situation_bonus,
+                                + situation_bonus
+                                + flexibility_bonus(hand, &[i]),
                             resulting_field,
                             wins_immediately,
                             hurts_self_or_helps_opponent,
@@ -1831,6 +1873,37 @@ mod perf_tests {
             non_attacking_kept, MINIMAX_MIN_NON_ATTACK_SLOTS,
             "expected exactly the reserved number of non-attacking candidates to survive, \
              got {non_attacking_kept}"
+        );
+    }
+
+    #[test]
+    /// flexibility_bonus must reward keeping a diverse remaining hand more than
+    /// exhausting the only card of some category -- direct check of the counting
+    /// logic itself, independent of how it's woven into any specific candidate
+    /// branch
+    fn test_flexibility_bonus_rewards_a_more_diverse_remaining_hand() {
+        // playing the ONLY Mult/Div card leaves 2 categories (basis, limit)
+        let hand_using_only_multdiv = vec![
+            Card::AlgebraicCard(AlgebraicCard::Mult),
+            Card::BasisCard(BasisCard::X),
+            Card::LimitCard(LimitCard::Lim0),
+        ];
+        let narrowing_bonus = flexibility_bonus(&hand_using_only_multdiv, &[0]);
+
+        // playing a duplicate BasisCard (another one remains) leaves 3 categories
+        // (basis, multdiv, limit) -- strictly more diverse than the case above
+        let hand_using_a_duplicate_basis = vec![
+            Card::BasisCard(BasisCard::X),
+            Card::BasisCard(BasisCard::X2),
+            Card::AlgebraicCard(AlgebraicCard::Mult),
+            Card::LimitCard(LimitCard::Lim0),
+        ];
+        let preserving_bonus = flexibility_bonus(&hand_using_a_duplicate_basis, &[0]);
+
+        assert!(
+            preserving_bonus > narrowing_bonus,
+            "expected keeping a more diverse hand to score higher: preserving={preserving_bonus} \
+             narrowing={narrowing_bonus}"
         );
     }
 
