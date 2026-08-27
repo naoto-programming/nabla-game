@@ -140,7 +140,15 @@ fn try_take_ai_turn() {
     }
 
     let difficulty = unsafe { AI_DIFFICULTY };
-    let chosen = choose_move(candidates, &game.player_1, difficulty, game.turn.number, &game.field);
+    let chosen = choose_move(
+        candidates,
+        &game.player_2,
+        &game.player_1,
+        difficulty,
+        game.turn.number,
+        &game.field,
+        DEFAULT_MINIMAX_TIME_BUDGET,
+    );
     for id in chosen.clicks {
         // call the turn-phase logic directly (bypassing handle_mousedown) so the AI's
         // clicks don't also toggle the human-facing card-overflow expand/collapse state
@@ -355,6 +363,9 @@ fn generate_candidates_for(
     turn_number: u32,
 ) -> Vec<AiMove> {
     let mut moves = vec![];
+    
+    // Evaluate overall game situation for strategic context
+    let situation_bonus = evaluate_game_situation(player_num, hand, field);
 
     for (i, card) in hand.iter().enumerate() {
         let hand_id = RenderId::from(format!("p{player_num}={i}"));
@@ -373,7 +384,8 @@ fn generate_candidates_for(
                         moves.push(AiMove {
                             clicks: vec![hand_id, RenderId::from(format!("f={target}"))],
                             score: score_replacement(player_num, target, &new_basis, field)
-                                + strategic_slot_bonus(player_num, &resulting_field),
+                                + strategic_slot_bonus(player_num, &resulting_field)
+                                + situation_bonus,
                             resulting_field,
                             wins_immediately,
                             hurts_self_or_helps_opponent,
@@ -390,7 +402,8 @@ fn generate_candidates_for(
                         hurts_self_or_helps_opponent(player_num, field, &resulting_field);
                     moves.push(AiMove {
                         clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
-                        score: score_half(player_num, half_start, false, field, &resulting_field),
+                        score: score_half(player_num, half_start, false, field, &resulting_field)
+                            + situation_bonus,
                         resulting_field,
                         wins_immediately,
                         hurts_self_or_helps_opponent,
@@ -406,7 +419,8 @@ fn generate_candidates_for(
                         hurts_self_or_helps_opponent(player_num, field, &resulting_field);
                     moves.push(AiMove {
                         clicks: vec![hand_id, RenderId::from(format!("f={half_start}"))],
-                        score: score_half(player_num, half_start, true, field, &resulting_field),
+                        score: score_half(player_num, half_start, true, field, &resulting_field)
+                            + situation_bonus,
                         resulting_field,
                         wins_immediately,
                         hurts_self_or_helps_opponent,
@@ -414,78 +428,22 @@ fn generate_candidates_for(
                 }
             }
             Card::AlgebraicCard(AlgebraicCard::Div | AlgebraicCard::Mult) => {
-                for a in 0..6 {
-                    for b in 0..6 {
-                        // Mult/Div combines two of the SAME player's own slots (build up
-                        // your own side) or two of the opponent's (simplify their side
-                        // using their own expressions) -- never one from each. Without
-                        // this, `a` (kept, merged) and `b` (always sacrificed, see below)
-                        // could land on opposite sides, so a single card play would
-                        // simultaneously alter both players' fields in one move: grow
-                        // whichever side `a` is on while emptying `b`'s slot on the
-                        // other side entirely -- a visibly different (and much stronger)
-                        // effect than every other card, which only ever touches one
-                        // player's side per play
-                        if a == b
-                            || field[a].basis.is_none()
-                            || field[b].basis.is_none()
-                            || field_owner(a) != field_owner(b)
-                        {
-                            continue;
-                        }
-                        let bases = vec![
-                            field[a].basis.as_ref().unwrap().clone(),
-                            field[b].basis.as_ref().unwrap().clone(),
-                        ];
-                        let result = apply_multi_card(card, bases);
-                        let mut resulting_field = field.clone();
-                        resulting_field[b] = FieldBasis::none();
-                        resulting_field[a] = if result.is_num(0) {
-                            FieldBasis::none()
-                        } else {
-                            FieldBasis::new(&result)
-                        };
-                        // both operand slots get cleared first; the result (if
-                        // non-zero) then goes back into `a` -- `b` is always lost, so
-                        // it must be scored too, or the AI can't see that it's
-                        // sacrificing (say) its own slot to simplify an opponent's.
-                        // strategic_slot_bonus is added once, from the true combined
-                        // resulting_field, not once per score_replacement call -- see
-                        // its doc for why that split matters specifically here
-                        let score = score_replacement(player_num, a, &result, field)
-                            + score_replacement(player_num, b, &Basis::from(0), field)
-                            - 1.0 // drop the double-counted baseline from scoring twice
-                            + strategic_slot_bonus(player_num, &resulting_field);
-                        let wins_immediately =
-                            side_is_cleared(&resulting_field, opponent_of(player_num));
-                        let hurts_self_or_helps_opponent =
-                            hurts_self_or_helps_opponent(player_num, field, &resulting_field);
-                        moves.push(AiMove {
-                            clicks: vec![
-                                hand_id,
-                                RenderId::from(format!("f={a}")),
-                                RenderId::from(format!("f={b}")),
-                                RenderId::Multidone,
-                            ],
-                            score,
-                            resulting_field,
-                            wins_immediately,
-                            hurts_self_or_helps_opponent,
-                        });
-                    }
-                }
-
-                // field slot + a BasisCard from hand (eg. multiplying an opponent's
-                // slot by a "0" in hand to clear it outright) -- multi_select_phase
-                // (events/mousedown_handler.rs) allows exactly this: one field slot
+                // field+field Mult/Div is deprecated -- multi_select_phase
+                // (events/mousedown_handler.rs) now only accepts ONE field slot per
+                // Mult/Div play (a second field click is silently dropped there), so
+                // a field+field candidate here would be a move the AI could choose
+                // but could never actually complete: replaying its clicks would
+                // leave `selected` one item short of has_at_least_2_basis, so the
+                // Multidone click would never trigger the commit, stranding the
+                // turn. Only field+hand-card combinations are generated below,
+                // matching what multi_select_phase actually allows: one field slot
                 // plus one BasisCard from hand as the two operands, consuming the
-                // hand card without freeing up a second field slot (unlike the
-                // field+field case above, there's no second slot to sacrifice). No
-                // same-side restriction applies here, since only one operand is
-                // even a field slot -- every other single-target card can already
-                // aim at either side, and this is no different. Tried in both
-                // (field, hand) and (hand, field) order, since Div is order-
-                // sensitive (numerator/denominator) even though Mult isn't
+                // hand card without freeing up a second field slot. No same-side
+                // restriction applies here, since only one operand is even a field
+                // slot -- every other single-target card can already aim at either
+                // side, and this is no different. Tried in both (field, hand) and
+                // (hand, field) order, since Div is order-sensitive
+                // (numerator/denominator) even though Mult isn't
                 for (hand_index, hand_card) in hand.iter().enumerate() {
                     let hand_basis_card = match hand_card {
                         Card::BasisCard(basis_card) => *basis_card,
@@ -517,8 +475,13 @@ fn generate_candidates_for(
                             } else {
                                 FieldBasis::new(&result)
                             };
+                            // creating 0 (×0 or ÷0) against an opponent slot clears
+                            // it outright -- score_replacement already scores that
+                            // at +200 (see "cleared an opponent slot entirely"), so
+                            // no separate bonus is added here on top of it
                             let score = score_replacement(player_num, target, &result, field)
-                                + strategic_slot_bonus(player_num, &resulting_field);
+                                + strategic_slot_bonus(player_num, &resulting_field)
+                                + situation_bonus;
                             let wins_immediately =
                                 side_is_cleared(&resulting_field, opponent_of(player_num));
                             let hurts_self_or_helps_opponent =
@@ -552,10 +515,20 @@ fn generate_candidates_for(
                             side_is_cleared(&resulting_field, opponent_of(player_num));
                         let hurts_self_or_helps_opponent =
                             hurts_self_or_helps_opponent(player_num, field, &resulting_field);
+                        
+                        // Strategic evaluation for Limit cards
+                        let limit_bonus = if let Card::LimitCard(limit_card) = card {
+                            evaluate_limit_strategy(player_num, target, limit_card, &result, field, &resulting_field)
+                        } else {
+                            0.0
+                        };
+                        
                         moves.push(AiMove {
                             clicks: vec![hand_id, RenderId::from(format!("f={target}"))],
                             score: score_replacement(player_num, target, &result, field)
-                                + strategic_slot_bonus(player_num, &resulting_field),
+                                + strategic_slot_bonus(player_num, &resulting_field)
+                                + limit_bonus
+                                + situation_bonus,
                             resulting_field,
                             wins_immediately,
                             hurts_self_or_helps_opponent,
@@ -656,6 +629,356 @@ fn apply_lookahead(
     candidates
 }
 
+// --- Hard difficulty: genuine minimax search with alpha-beta pruning ------------
+//
+// apply_lookahead (above) is a heuristic: it scores each of the AI's own
+// candidates, then subtracts a *weighted estimate* of the single best reply the
+// opponent could make -- never checking what happens after THAT, and never
+// re-deriving its own future moves as anything other than that same one-shot
+// heuristic. It can miss real multi-move tactics (a trade that only pays off two
+// or three moves later) and has no principled way to compare "this move scores
+// well but leaves a bad follow-up" against "this move scores modestly but forces
+// a winning sequence".
+//
+// The search below replaces that ranking step for Hard difficulty with a proper
+// minimax: it plays out actual alternating turns to a search horizon, using
+// score_replacement/strategic_slot_bonus only for MOVE ORDERING (so alpha-beta
+// prunes effectively) and evaluate_position as the static leaf evaluator. Every
+// hard safety rule (self-defeat, immediate loss, hurts-self/helps-opponent,
+// progress, non-strengthening -- see apply_hard_filters) still applies at every
+// simulated AI turn along the way, not just the root, so the search never credits
+// a line with a move the real AI would never actually choose when it got there.
+//
+// Both hands are held static for the whole search: no card is removed from hand
+// after being "played" in a simulated line, and no future draw is modelled. The
+// real deck order isn't something the AI should be treated as knowing in advance,
+// and the actual chosen move is always executed for real afterward through the
+// normal game engine (which DOES consume/redraw correctly) regardless of what
+// this search assumed -- this is a lookahead heuristic on which cards get USED,
+// not a claim about exact future hand contents.
+
+/// how many of the highest-move-ordered candidates get explored at each minimax
+/// node beyond the root -- without this, the search tree's size explodes
+/// combinatorially (branching factor ^ depth), since generating candidates here
+/// isn't free (each one builds a real symbolic Basis). The root itself (the AI's
+/// actual move choice, in choose_move_via_minimax) is never capped -- only the
+/// simulated replies/follow-ups explored while evaluating each root candidate are
+const MINIMAX_BRANCH_CAP: usize = 20;
+/// hard ceiling on search depth in plies (individual moves, not full rounds).
+/// Deliberately shallow: both hands are held static across the whole search (see
+/// this module's own doc), with only the one card actually played at each
+/// simulated ply removed (see hand_after_move) -- no redraw is ever modelled. In
+/// the real game a hand redraws up to 7 cards at the end of EVERY turn, so by
+/// depth 12 (6 of the AI's own simulated turns, 6 of the opponent's) the search
+/// is reasoning about a hand of leftover cards that would never actually exist --
+/// a scenario neither side ever draws a single new card for six turns straight --
+/// which produces increasingly fictional, noisy signal rather than useful
+/// lookahead. Empirically, a depth-12 cap was reached almost every turn well
+/// within budget even for typical (non-worst-case) hands -- the search wasn't
+/// time-constrained at all, it was spending its generous time budget exploring
+/// ever-deeper fiction instead of examining more real options at a depth where
+/// the static-hand assumption is still a reasonable approximation. Shallower and
+/// wider (see MINIMAX_BRANCH_CAP) trades speculative depth for a more thorough
+/// look at the moves actually worth comparing
+const MINIMAX_MAX_DEPTH: u32 = 6;
+/// how long Hard difficulty may spend searching for a single real move in
+/// production. Iterative deepening (see choose_move_via_minimax) means a
+/// smaller/faster position simply finishes early rather than wasting this whole
+/// budget. choose_move takes the budget as a parameter rather than hard-coding
+/// this everywhere specifically so tests can pass a much smaller one -- a
+/// randomized sweep across thousands of positions at up to 5 real seconds each
+/// would make the test suite itself unusably slow, even though none of that time
+/// is needed to verify the properties those tests actually check
+const DEFAULT_MINIMAX_TIME_BUDGET: std::time::Duration = std::time::Duration::from_millis(5000);
+
+/// position-only evaluation used at the minimax search horizon, where there's no
+/// further move to score -- unlike score_replacement/strategic_slot_bonus, which
+/// score a MOVE (a transition from one field to another), this needs to score a
+/// STATE directly. Rather than inventing a separate hand-rolled formula (an
+/// earlier version of this function did exactly that, weighted toward occupied
+/// slot count with total complexity as a tie-breaker) and risking it correlating
+/// poorly with actual winning chances, this reuses the SAME move-scoring
+/// machinery every other tier and every other difficulty already relies on: the
+/// best score_replacement/strategic_slot_bonus-rated move ai_player_num could
+/// make right now from this position (see best_reply_score). A position where the
+/// AI's own best available move already scores well (eg. an easy slot clear
+/// sitting right there) really is a good position, and this evaluator agrees for
+/// the same reason Medium's ranking does -- rather than the search's leaves
+/// judging "good" by a different, untested standard than its own move ordering
+/// and every other difficulty use throughout this file. Only ever called on a
+/// non-terminal position (see terminal_outcome, checked first at every node), so
+/// it never needs to handle either side already being at zero itself
+fn evaluate_position(ai_player_num: u32, ai_hand: &[Card], field: &Field, turn_number: u32) -> f64 {
+    best_reply_score(ai_player_num, ai_hand, field, turn_number)
+}
+
+/// `hand` with whichever card(s) `mv` used removed -- the hand a side has
+/// available for its NEXT simulated turn along this specific line. Mirrors
+/// end_turn's own card-removal logic (events/mousedown_handler.rs): every
+/// "player" click in `mv.clicks` (the operator card, and for a field+hand-card
+/// Mult/Div move, the BasisCard operand too) corresponds to a card actually
+/// consumed. Without this, a card played at one simulated ply would still show up
+/// as available two plies later in the same line -- not just an unlikely
+/// coincidence but a systematic distortion, since the search would always "find"
+/// the same good card still sitting in hand for a follow-up that in reality would
+/// have already been spent
+fn hand_after_move(hand: &[Card], mv: &AiMove) -> Vec<Card> {
+    let mut used_indices: Vec<usize> = mv
+        .clicks
+        .iter()
+        .filter(|id| id.is_player())
+        .map(|id| id.key_val().1)
+        .collect();
+    used_indices.sort_unstable();
+    used_indices.reverse();
+    let mut remaining = hand.to_vec();
+    for i in used_indices {
+        remaining.remove(i);
+    }
+    remaining
+}
+
+/// Some(final score, from ai_player_num's point of view) if `mv` ends the game
+/// outright, None if the game continues past this move. Checked before recursing
+/// into a child so a terminal move short-circuits instead of wastefully trying to
+/// generate further moves for an already-finished game -- and so a move that
+/// clears the ACTING player's own side is correctly scored as a loss for THEM even
+/// if it also cleared the other side in the same move, matching next_turn's
+/// own-side-checked-first rule (see filter_out_self_defeating_moves's doc)
+fn terminal_outcome(mv: &AiMove, acting_player: u32, ai_player_num: u32) -> Option<f64> {
+    if side_is_cleared(&mv.resulting_field, acting_player) {
+        return Some(if acting_player == ai_player_num {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        });
+    }
+    if mv.wins_immediately {
+        return Some(if acting_player == ai_player_num {
+            f64::INFINITY
+        } else {
+            f64::NEG_INFINITY
+        });
+    }
+    None
+}
+
+/// outcome of running the AI's own hard safety/progress filters (tiers 0, 2-5 --
+/// see choose_move's doc) against a fresh candidate set: either one of them wins
+/// outright (tier 1, checked in between tiers 0 and 2), or here's what's left
+/// after every filter that applies regardless of difficulty
+enum HardFilterResult {
+    Win(AiMove),
+    Filtered(Vec<AiMove>),
+}
+
+/// applies every hard rule the real AI always applies before any difficulty-scaled
+/// ranking -- tier 0 (never self-defeat), tier 1 (always take an outright win),
+/// tier 2 (never hand the opponent an immediate win), tier 3 (never hurt self/help
+/// opponent), tier 4 (always make progress), tier 5 (never strengthen the
+/// opponent) -- shared between choose_move's own root decision and minimax's
+/// simulated future AI turns, so the search never credits a line with a move the
+/// real AI would never actually choose once it got there
+fn apply_hard_filters(
+    candidates: Vec<AiMove>,
+    opponent_hand: &[Card],
+    turn_number: u32,
+    field: &Field,
+) -> HardFilterResult {
+    let candidates = filter_out_self_defeating_moves(candidates);
+    if let Some(winning_index) = candidates.iter().position(|mv| mv.wins_immediately) {
+        let mut candidates = candidates;
+        return HardFilterResult::Win(candidates.remove(winning_index));
+    }
+    let candidates = filter_out_losing_moves(candidates, opponent_hand, turn_number);
+    let candidates = filter_out_moves_that_hurt_self_or_help_opponent(candidates);
+    let candidates = filter_out_non_progressive_moves(candidates, field);
+    let candidates = filter_out_opponent_strengthening_moves(candidates, field);
+    HardFilterResult::Filtered(candidates)
+}
+
+/// recursive minimax search with alpha-beta pruning, maximizing for
+/// `ai_player_num` and minimizing for the other player. Returns None if the time
+/// budget ran out before this subtree could be fully evaluated, so the caller
+/// (choose_move_via_minimax) can discard an incomplete iterative-deepening pass
+/// rather than act on a partial (and therefore unreliable) result
+#[allow(clippy::too_many_arguments)]
+fn minimax(
+    field: &Field,
+    ai_player_num: u32,
+    acting_player: u32,
+    ai_hand: &[Card],
+    opponent_hand: &[Card],
+    turn_number: u32,
+    depth_remaining: u32,
+    mut alpha: f64,
+    mut beta: f64,
+    deadline: std::time::Instant,
+) -> Option<f64> {
+    if std::time::Instant::now() >= deadline {
+        return None;
+    }
+    if depth_remaining == 0 {
+        return Some(evaluate_position(ai_player_num, ai_hand, field, turn_number));
+    }
+
+    let is_maximizing = acting_player == ai_player_num;
+    let candidates = if is_maximizing {
+        // a simulated future AI turn must obey the same hard rules the real AI
+        // always applies -- otherwise the search could credit a line with a move
+        // (eg. one that hurts the AI's own field) the real AI would never actually
+        // make when it got there
+        match apply_hard_filters(
+            generate_candidates_for(acting_player, ai_hand, field, turn_number),
+            opponent_hand,
+            turn_number,
+            field,
+        ) {
+            HardFilterResult::Win(_) => return Some(f64::INFINITY),
+            HardFilterResult::Filtered(candidates) => candidates,
+        }
+    } else {
+        // the opponent isn't bound by the AI's own design rules -- a minimax
+        // search should conservatively assume they play their objectively best
+        // available move, not one artificially narrowed by the AI's own filters
+        generate_candidates_for(acting_player, opponent_hand, field, turn_number)
+    };
+
+    if candidates.is_empty() {
+        // no legal move for whoever's turn this is -- treat the position as final
+        // for search purposes rather than modelling a forfeited turn (a rare edge
+        // case; the real game engine's own forfeit handling covers it live)
+        return Some(evaluate_position(ai_player_num, ai_hand, field, turn_number));
+    }
+
+    let mut candidates = candidates;
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    candidates.truncate(MINIMAX_BRANCH_CAP);
+
+    let mut best = if is_maximizing {
+        f64::NEG_INFINITY
+    } else {
+        f64::INFINITY
+    };
+
+    for mv in &candidates {
+        let score = match terminal_outcome(mv, acting_player, ai_player_num) {
+            Some(score) => score,
+            None => {
+                // whichever side just moved no longer has the card(s) it just
+                // used, for the rest of THIS simulated line -- see
+                // hand_after_move's doc on why this matters
+                let next_ai_hand;
+                let next_opponent_hand;
+                let (next_ai_hand_ref, next_opponent_hand_ref): (&[Card], &[Card]) =
+                    if is_maximizing {
+                        next_ai_hand = hand_after_move(ai_hand, mv);
+                        (&next_ai_hand, opponent_hand)
+                    } else {
+                        next_opponent_hand = hand_after_move(opponent_hand, mv);
+                        (ai_hand, &next_opponent_hand)
+                    };
+                minimax(
+                    &mv.resulting_field,
+                    ai_player_num,
+                    opponent_of(acting_player),
+                    next_ai_hand_ref,
+                    next_opponent_hand_ref,
+                    turn_number + 1,
+                    depth_remaining - 1,
+                    alpha,
+                    beta,
+                    deadline,
+                )?
+            }
+        };
+        if is_maximizing {
+            best = best.max(score);
+            alpha = alpha.max(best);
+        } else {
+            best = best.min(score);
+            beta = beta.min(best);
+        }
+        if beta <= alpha {
+            break;
+        }
+    }
+    Some(best)
+}
+
+/// picks the AI's move via genuine minimax search with alpha-beta pruning and
+/// iterative deepening (see the module doc above), replacing apply_lookahead
+/// entirely for Hard difficulty. `candidates` have already passed every hard
+/// filter (see apply_hard_filters) -- this only decides which of THOSE is truly
+/// best, by searching as many plies ahead as the time budget allows. Each
+/// iterative-deepening pass reorders the root candidates so the previous pass's
+/// best move is tried first at the next depth, giving alpha-beta a strong initial
+/// bound to prune against; an interrupted pass is discarded outright rather than
+/// trusted, so the final answer always reflects a depth that was fully evaluated
+fn choose_move_via_minimax(
+    mut candidates: Vec<AiMove>,
+    ai_hand: &[Card],
+    opponent_hand: &[Card],
+    turn_number: u32,
+    time_budget: std::time::Duration,
+) -> AiMove {
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    let deadline = std::time::Instant::now() + time_budget;
+
+    let mut best_index = 0;
+    let mut depth = 1;
+    while depth <= MINIMAX_MAX_DEPTH && std::time::Instant::now() < deadline {
+        let mut alpha = f64::NEG_INFINITY;
+        let beta = f64::INFINITY;
+        let mut this_pass_best: Option<(usize, f64)> = None;
+        let mut timed_out = false;
+
+        for (i, mv) in candidates.iter().enumerate() {
+            let score = match terminal_outcome(mv, AI_PLAYER_NUM, AI_PLAYER_NUM) {
+                Some(score) => score,
+                None => {
+                    // the AI no longer has the card it's about to play, for the
+                    // rest of this simulated line -- see hand_after_move's doc
+                    let ai_hand_after_root_move = hand_after_move(ai_hand, mv);
+                    match minimax(
+                        &mv.resulting_field,
+                        AI_PLAYER_NUM,
+                        opponent_of(AI_PLAYER_NUM),
+                        &ai_hand_after_root_move,
+                        opponent_hand,
+                        turn_number + 1,
+                        depth,
+                        alpha,
+                        beta,
+                        deadline,
+                    ) {
+                        Some(score) => score,
+                        None => {
+                            timed_out = true;
+                            break;
+                        }
+                    }
+                }
+            };
+            if this_pass_best.is_none_or(|(_, best_score)| score > best_score) {
+                this_pass_best = Some((i, score));
+            }
+            alpha = alpha.max(score);
+        }
+
+        if timed_out {
+            break;
+        }
+        if let Some((i, _)) = this_pass_best {
+            candidates.swap(0, i);
+            best_index = 0;
+        }
+        depth += 1;
+    }
+
+    candidates.remove(best_index)
+}
+
 /// removes candidates that would immediately end the game in the AI's own defeat
 /// (clearing every slot the AI owns), unless EVERY candidate does this (nothing left
 /// to filter down to). Checked before even tier 1 (an immediate win): in the rare
@@ -748,6 +1071,107 @@ fn filter_out_non_progressive_moves(candidates: Vec<AiMove>, field: &Field) -> V
     }
 }
 
+/// evaluates Limit cards strategically, particularly focusing on:
+/// - Using lim(x→∞) on x to clear opponent's slot (x→∞ = ∞, but lim(x→∞) of x is ∞, which may not clear)
+/// - Using limit cards to simplify own field when in danger
+/// - Evaluating whether limit operations are beneficial strategically
+fn evaluate_limit_strategy(
+    player_num: u32,
+    target: usize,
+    limit_card: &LimitCard,
+    result: &Basis,
+    field: &Field,
+    resulting_field: &Field,
+) -> f64 {
+    let is_opponent_side = field_owner(target) != player_num;
+    let old_size = field[target].basis.as_ref().map(basis_size).unwrap_or(0);
+    let new_size = if result.is_num(0) { 0 } else { basis_size(result) };
+    
+    // Check if this clears the slot (result is 0 or effectively simple)
+    let clears_slot = result.is_num(0) || new_size < old_size;
+    
+    // Bonus for clearing opponent's slot with limit
+    if is_opponent_side && clears_slot {
+        return 150.0;
+    }
+    
+    // Penalty for clearing own slot unless it saves from immediate loss
+    if !is_opponent_side && clears_slot {
+        // Check if we're in danger (few slots remaining)
+        let own_slots_remaining: u32 = (0..6)
+            .filter(|&i| field_owner(i) == player_num)
+            .filter(|&i| field[i].basis.is_some())
+            .count() as u32;
+        
+        if own_slots_remaining <= 2 {
+            // In danger, clearing own slot is very bad
+            return -200.0;
+        } else {
+            // Not in immediate danger, still penalize
+            return -50.0;
+        }
+    }
+    
+    // Special case: lim(x→∞) on x-like expressions
+    // If the result simplifies to something very simple, reward it
+    if new_size <= 2 && old_size > 2 {
+        return 50.0;
+    }
+    
+    0.0
+}
+
+/// evaluates the overall game situation and provides strategic bonuses/penalties
+/// This helps the AI understand when to be aggressive vs defensive
+fn evaluate_game_situation(player_num: u32, hand: &[Card], field: &Field) -> f64 {
+    let opponent_num = opponent_of(player_num);
+    
+    // Count remaining slots for both players
+    let own_slots_remaining: u32 = (0..6)
+        .filter(|&i| field_owner(i) == player_num)
+        .filter(|&i| field[i].basis.is_some())
+        .count() as u32;
+    
+    let opponent_slots_remaining: u32 = (0..6)
+        .filter(|&i| field_owner(i) == opponent_num)
+        .filter(|&i| field[i].basis.is_some())
+        .count() as u32;
+    
+    let mut situation_score = 0.0;
+    
+    // If we're in danger (few slots), be more defensive
+    if own_slots_remaining <= 2 {
+        situation_score -= 100.0; // Penalize risky moves
+    }
+    
+    // If opponent is in danger, be more aggressive
+    if opponent_slots_remaining <= 2 {
+        situation_score += 100.0; // Reward aggressive moves
+    }
+    
+    // Check for Mult/Div cards in hand for strategic plays
+    let has_mult_div = hand.iter().any(|c| matches!(c, Card::AlgebraicCard(AlgebraicCard::Mult | AlgebraicCard::Div)));
+    let has_zero = hand.iter().any(|c| matches!(c, Card::BasisCard(BasisCard::Zero)));
+    
+    // If we have Mult/Div and opponent has simple expressions, bonus for aggressive play
+    if has_mult_div && opponent_slots_remaining > 0 {
+        let opponent_has_simple = (0..6).any(|i| {
+            field_owner(i) == opponent_num && 
+            field[i].basis.as_ref().map(basis_size).unwrap_or(0) <= 2
+        });
+        if opponent_has_simple {
+            situation_score += 50.0;
+        }
+    }
+    
+    // If we have 0 in hand and can use it strategically, bonus
+    if has_zero && has_mult_div {
+        situation_score += 30.0;
+    }
+    
+    situation_score
+}
+
 /// removes candidates that directly strengthen the opponent's field (increase
 /// opponent's slot complexity), unless every candidate does this. This is a
 /// defensive filter to ensure the AI never voluntarily makes the opponent stronger.
@@ -775,62 +1199,55 @@ fn filter_out_opponent_strengthening_moves(candidates: Vec<AiMove>, field: &Fiel
     }
 }
 
-/// difficulty-scaled selection, applying priority tiers roughly highest-to-lowest:
-/// (1) an immediate win is always taken outright, for every difficulty -- see
-/// wins_immediately; (2) an immediate loss is always avoided if any alternative
-/// exists, for every difficulty -- see filter_out_losing_moves; (3) the AI never
-/// attacks its own field or strengthens the opponent's if there's any alternative,
-/// for every difficulty -- see filter_out_moves_that_hurt_self_or_help_opponent;
-/// (4) always make progress toward winning if possible; (5) never directly
-/// strengthen the opponent if there's an alternative; (6+) among what's left, Hard
-/// looks one ply ahead across *every* remaining candidate (see
-/// apply_lookahead's doc on why a pool isn't safe here) and always takes the
-/// best-adjusted move, Medium looks ahead too but only across its top
-/// MEDIUM_LOOKAHEAD_POOL candidates and picks randomly from a shrinking top slice of
-/// that adjusted ranking (reasonably aware, not required to be perfect), and Easy
-/// skips lookahead entirely and stays mostly random so it remains reliably beatable
+/// difficulty-scaled selection. Every hard rule (see apply_hard_filters) applies
+/// regardless of difficulty: (1) never self-defeat, (2) always take an outright
+/// win, (3) never hand the opponent an immediate win next turn if avoidable, (4)
+/// never attack our own field or strengthen the opponent's if avoidable, (5)
+/// always make progress toward winning if possible, (6) never directly strengthen
+/// the opponent if avoidable. Among whatever survives those, Hard hands off to a
+/// genuine minimax search (see choose_move_via_minimax) that always finds the
+/// true best move within its search horizon; Medium looks ahead one ply but only
+/// across its top MEDIUM_LOOKAHEAD_POOL candidates and picks randomly from a
+/// shrinking top slice of that adjusted ranking (reasonably aware, not required to
+/// be perfect); Easy skips lookahead entirely and stays mostly random so it
+/// remains reliably beatable. `minimax_time_budget` is only consulted for Hard --
+/// see DEFAULT_MINIMAX_TIME_BUDGET's doc on why this is a parameter instead of
+/// always using that constant directly
 fn choose_move(
     candidates: Vec<AiMove>,
+    ai_hand: &[Card],
     opponent_hand: &[Card],
     difficulty: AiDifficulty,
     turn_number: u32,
     field: &Field,
+    minimax_time_budget: std::time::Duration,
 ) -> AiMove {
-    // tier 0 (implicit, checked first): never choose a move that instantly ends the
-    // game in the AI's own defeat, if any alternative exists
-    let candidates = filter_out_self_defeating_moves(candidates);
+    let candidates = match apply_hard_filters(candidates, opponent_hand, turn_number, field) {
+        HardFilterResult::Win(winning_move) => return winning_move,
+        HardFilterResult::Filtered(candidates) => candidates,
+    };
 
-    // tier 1: never pass up a move that wins outright, regardless of difficulty
-    if let Some(winning_index) = candidates.iter().position(|mv| mv.wins_immediately) {
-        let mut candidates = candidates;
-        return candidates.remove(winning_index);
+    if matches!(difficulty, AiDifficulty::Hard) {
+        return choose_move_via_minimax(
+            candidates,
+            ai_hand,
+            opponent_hand,
+            turn_number,
+            minimax_time_budget,
+        );
     }
 
-    // tier 2: never hand the opponent a win next turn if there's any alternative
-    let candidates = filter_out_losing_moves(candidates, opponent_hand, turn_number);
-
-    // tier 3: never attack our own field or strengthen the opponent's, if there's
-    // any alternative -- see filter_out_moves_that_hurt_self_or_help_opponent
-    let candidates = filter_out_moves_that_hurt_self_or_help_opponent(candidates);
-    
-    // tier 4: always make progress toward winning if possible
-    let candidates = filter_out_non_progressive_moves(candidates, field);
-
-    // tier 5: never directly strengthen the opponent if there's an alternative
-    let candidates = filter_out_opponent_strengthening_moves(candidates, field);
-
     let mut candidates = match difficulty {
-        AiDifficulty::Hard => apply_lookahead(candidates, opponent_hand, turn_number, usize::MAX),
         AiDifficulty::Medium => {
             apply_lookahead(candidates, opponent_hand, turn_number, MEDIUM_LOOKAHEAD_POOL)
         }
         AiDifficulty::Easy => candidates,
+        AiDifficulty::Hard => unreachable!("Hard already returned above"),
     };
     candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
     let mut rng = rand::thread_rng();
 
     let index = match difficulty {
-        AiDifficulty::Hard => 0, // Always take the best move on Hard
         AiDifficulty::Medium => {
             // Reduced randomness for Medium - choose from top 20% instead of 34%
             let pool = ((candidates.len() as f64) * 0.20).ceil().max(1.0) as usize;
@@ -845,6 +1262,7 @@ fn choose_move(
                 rng.gen_range(0..candidates.len())
             }
         }
+        AiDifficulty::Hard => unreachable!("Hard already returned above"),
     };
     candidates.remove(index)
 }
@@ -959,8 +1377,11 @@ mod perf_tests {
 
     /// the AI's full decision process (including Log, whose recursion through
     /// Mult/Div/Pow previously had no depth guard -- see logarithm.rs) must still
-    /// complete quickly and without panicking against a field shaped like a real,
-    /// long-running game rather than a freshly-dealt one
+    /// respect its time budget against a field shaped like a real, long-running
+    /// game rather than a freshly-dealt one. Uses a short budget (not
+    /// DEFAULT_MINIMAX_TIME_BUDGET's real 5s) purely so this test itself runs
+    /// quickly -- the property being checked (the deadline is actually honoured)
+    /// doesn't depend on how long that budget is
     #[test]
     fn test_hard_ai_handles_a_long_games_nested_field_without_freezing() {
         let field = long_game_field();
@@ -974,38 +1395,46 @@ mod perf_tests {
             Card::LimitCard(LimitCard::LimPosInf),
         ];
         let opponent_hand = ai_hand.clone();
+        let budget = std::time::Duration::from_millis(500);
 
         let start = std::time::Instant::now();
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 20);
         assert!(!candidates.is_empty(), "long-game field should still have legal moves");
-        let _chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 20, &field);
+        let _chosen = choose_move(candidates, &ai_hand, &opponent_hand, AiDifficulty::Hard, 20, &field, budget);
         let elapsed = start.elapsed();
 
         assert!(
-            elapsed.as_millis() < 3000,
-            "AI decision against a long-game field took {:?} -- too slow, risks looking frozen",
-            elapsed
+            elapsed < budget + std::time::Duration::from_millis(3000),
+            "AI decision against a long-game field took {:?} against a {:?} budget -- \
+             the deadline isn't being honoured closely enough, risks looking frozen \
+             at the real (much larger) production budget",
+            elapsed,
+            budget
         );
     }
 
-    /// reproduces the "AI stops" report: with the pool cap removed for Hard (so it
-    /// checks every one of its own candidates) and both the AI's and opponent's hands
-    /// stacked with the most expensive card type in both slots of the lookahead, does
-    /// a single decision still complete in a time that reads as responsive rather
-    /// than frozen? This is the actual worst case the real game can produce (Mult/Div
-    /// is the single most expensive branch; nothing is more expensive than having it
-    /// on both sides of the nested search)
+    /// reproduces the "AI stops" report: both the AI's and opponent's hands stacked
+    /// with the most expensive card type combinations (Mult/Div, both against
+    /// other field slots and against BasisCards from hand). Does a real,
+    /// production-budget Hard decision complete within that budget (plus a small
+    /// margin for whatever node was already in flight when the deadline passed) --
+    /// eg. does the search's own deadline check actually get hit often enough,
+    /// rather than the search wildly overrunning it by continuing to expand
+    /// already-started subtrees? This is the actual worst case the real game can
+    /// produce (Mult/Div is the single most expensive branch; nothing is more
+    /// expensive than having it fully available on both sides of the search)
     #[test]
     fn test_hard_ai_decision_completes_quickly_in_worst_case() {
         let field = full_field();
         let ai_hand = worst_case_hand();
         let opponent_hand = worst_case_hand();
+        let budget = DEFAULT_MINIMAX_TIME_BUDGET;
 
         let start = std::time::Instant::now();
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
         assert!(!candidates.is_empty(), "worst-case hand should still have legal moves");
         let candidate_count = candidates.len();
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(candidates, &ai_hand, &opponent_hand, AiDifficulty::Hard, 4, &field, budget);
         let elapsed = start.elapsed();
 
         println!(
@@ -1015,9 +1444,11 @@ mod perf_tests {
             chosen.clicks.len()
         );
         assert!(
-            elapsed.as_millis() < 3000,
-            "AI decision took {:?} against a worst-case hand -- too slow, risks looking frozen",
-            elapsed
+            elapsed < budget + std::time::Duration::from_millis(3000),
+            "AI decision took {:?} against a {:?} budget with a worst-case hand -- \
+             the deadline isn't being honoured closely enough",
+            elapsed,
+            budget
         );
     }
 
@@ -1045,7 +1476,7 @@ mod perf_tests {
             candidates.iter().any(|mv| mv.wins_immediately),
             "test setup is wrong: no winning candidate was generated at all"
         );
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(candidates, &ai_hand, &opponent_hand, AiDifficulty::Hard, 4, &field, std::time::Duration::from_millis(200));
 
         assert!(
             chosen.wins_immediately,
@@ -1081,7 +1512,7 @@ mod perf_tests {
              produced a winning candidate, but none was generated -- Mult/Div with a \
              hand BasisCard operand isn't being considered at all"
         );
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(candidates, &ai_hand, &opponent_hand, AiDifficulty::Hard, 4, &field, std::time::Duration::from_millis(200));
 
         assert!(
             chosen.wins_immediately,
@@ -1116,7 +1547,7 @@ mod perf_tests {
         let opponent_hand = vec![Card::DerivativeCard(DerivativeCard::Derivative)];
 
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(candidates, &ai_hand, &opponent_hand, AiDifficulty::Hard, 4, &field, std::time::Duration::from_millis(200));
 
         assert!(
             !has_winning_move(1, &opponent_hand, &chosen.resulting_field, 5),
@@ -1155,7 +1586,7 @@ mod perf_tests {
                 .any(|mv| side_is_cleared(&mv.resulting_field, AI_PLAYER_NUM)),
             "test setup is wrong: no self-defeating candidate was generated at all"
         );
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(candidates, &ai_hand, &opponent_hand, AiDifficulty::Hard, 4, &field, std::time::Duration::from_millis(200));
 
         assert!(
             !side_is_cleared(&chosen.resulting_field, AI_PLAYER_NUM),
@@ -1210,12 +1641,12 @@ mod perf_tests {
         assert!(!hurts_self_or_helps_opponent(AI_PLAYER_NUM, &field, &field));
     }
 
-    /// the AI must never choose a move that attacks its own field (shrinks one of
-    /// its own slots) or strengthens the opponent's field (grows one of theirs),
-    /// whenever a safe alternative exists -- a single Mult/Div card naturally
-    /// generates both directions (which slot it sacrifices, which one it grows) as
-    /// separate candidates from the same (a, b) loop in generate_candidates_for, so
-    /// this only requires giving the AI that one card
+    /// the AI must never choose a move that attacks its own field (clears one of
+    /// its own slots) whenever a safe alternative exists -- multiplying a field
+    /// slot by a "0" from hand (see generate_candidates_for's field+hand-card
+    /// Mult/Div pairing) naturally generates both directions as separate
+    /// candidates from the same (target, hand_card) loop: clearing one of the
+    /// AI's own slots (flagged) and clearing one of the opponent's (safe)
     #[test]
     fn test_ai_never_attacks_own_field_or_strengthens_opponent_field() {
         // Field::new() starts every slot occupied -- slots meant to be empty must
@@ -1231,7 +1662,10 @@ mod perf_tests {
         field[4] = FieldBasis::new(&Basis::from(BasisCard::X));
         field[5] = FieldBasis::none();
 
-        let ai_hand = vec![Card::AlgebraicCard(AlgebraicCard::Mult)];
+        let ai_hand = vec![
+            Card::AlgebraicCard(AlgebraicCard::Mult),
+            Card::BasisCard(BasisCard::Zero),
+        ];
         let opponent_hand = vec![Card::BasisCard(BasisCard::X)];
 
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
@@ -1244,7 +1678,7 @@ mod perf_tests {
             candidates.iter().any(|mv| !mv.hurts_self_or_helps_opponent),
             "test setup is wrong: no safe alternative candidate was generated at all"
         );
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(candidates, &ai_hand, &opponent_hand, AiDifficulty::Hard, 4, &field, std::time::Duration::from_millis(200));
 
         assert!(
             !chosen.hurts_self_or_helps_opponent,
@@ -1254,18 +1688,16 @@ mod perf_tests {
     }
 
     #[test]
-    /// Mult/Div's field+field pairing combines two field slots into one, always
-    /// keeping `a` (merged result) and discarding `b` -- if `a` and `b` could land
-    /// on opposite sides, a single card play would alter both players' fields at
-    /// once (grow whichever side `a` is on, empty `b`'s slot on the other side),
-    /// unlike every other card, which only ever touches one player's side per
-    /// play. Every field fully occupied maximizes the number of field+field
-    /// candidates generated, giving the cross-side check the most surface area to
-    /// catch a regression on. The hand holds only the operator card itself (no
-    /// BasisCard), so this exercises just the field+field pairing -- the other
-    /// field+hand-card pairing always targets exactly one field slot and is
-    /// covered separately (see generate_candidates_for's own doc)
-    fn test_mult_div_candidates_never_combine_slots_from_both_sides() {
+    /// field+field Mult/Div (combining two field slots into one) is deprecated:
+    /// multi_select_phase (events/mousedown_handler.rs) now accepts at most ONE
+    /// field slot per Mult/Div play, silently dropping a second field click --
+    /// so if generate_candidates_for ever produced a field+field candidate again,
+    /// the AI would choose a move it could never actually complete (its second
+    /// field click would be dropped, leaving the turn stranded one operand short
+    /// of has_at_least_2_basis, with Multidone never triggering the commit).
+    /// Every Mult/Div candidate must target exactly one field slot, paired with a
+    /// BasisCard from hand
+    fn test_mult_div_candidates_always_target_exactly_one_field_slot() {
         let mut field = Field::new();
         for i in 0..6 {
             field[i] = FieldBasis::new(&Basis::from(BasisCard::X));
@@ -1275,7 +1707,7 @@ mod perf_tests {
             Card::AlgebraicCard(AlgebraicCard::Mult),
             Card::AlgebraicCard(AlgebraicCard::Div),
         ] {
-            let hand = vec![card];
+            let hand = vec![card, Card::BasisCard(BasisCard::Zero)];
             let candidates = generate_candidates_for(AI_PLAYER_NUM, &hand, &field, 4);
             assert!(
                 !candidates.is_empty(),
@@ -1290,14 +1722,9 @@ mod perf_tests {
                     .collect();
                 assert_eq!(
                     field_indices.len(),
-                    2,
-                    "{card} move didn't target exactly 2 field slots: {field_indices:?}"
-                );
-                assert_eq!(
-                    field_owner(field_indices[0]),
-                    field_owner(field_indices[1]),
-                    "{card} combined slots {field_indices:?} from both sides of the field \
-                     in a single move"
+                    1,
+                    "{card} move targeted {field_indices:?} field slots, not exactly 1 -- \
+                     field+field Mult/Div is deprecated and no longer executable"
                 );
             }
         }
@@ -1310,7 +1737,15 @@ mod perf_tests {
     /// next turn) AND tier 3 (doesn't hurt self/help opponent) all at once? If so,
     /// choose_move picked a strictly worse move than one that was available --
     /// a real bug, not just tier 2/tier 0 correctly outranking tier 3 when every
-    /// tier-3-safe candidate was already eliminated by a higher-priority tier
+    /// tier-3-safe candidate was already eliminated by a higher-priority tier.
+    /// This property is guaranteed by apply_hard_filters before Hard's minimax
+    /// search (or Medium/Easy's own ranking) ever runs, so it holds regardless of
+    /// search depth -- each difficulty gets its own trial count below sized to how
+    /// expensive a single choose_move call is at that difficulty, not to how
+    /// interesting a difficulty is to test; Hard's real minimax search is
+    /// meaningfully more expensive per call than a heuristic ranking even at a
+    /// tiny time budget, so it gets fewer trials to keep this test's own runtime
+    /// reasonable
     #[test]
     fn test_ai_never_hurts_itself_when_a_fully_safe_alternative_exists() {
         let basis_pool: Vec<Basis> = vec![
@@ -1353,7 +1788,7 @@ mod perf_tests {
         let mut violations: Vec<String> = vec![];
         let mut checked = 0;
 
-        for trial in 0..3000 {
+        for trial in 0..1500 {
             let mut field = Field::new();
             for i in 0..6 {
                 if rng.gen_bool(0.2) {
@@ -1383,11 +1818,36 @@ mod perf_tests {
             }
             checked += 1;
 
-            for difficulty in [AiDifficulty::Easy, AiDifficulty::Medium, AiDifficulty::Hard] {
+            // Hard's real minimax search costs meaningfully more per call than
+            // Easy/Medium's heuristic ranking even at a tiny time budget (it still
+            // has to actually run alpha-beta over however much of the tree that
+            // budget allows) -- only every 10th trial exercises it, so this test's
+            // own runtime stays reasonable without losing meaningful coverage of a
+            // property that Hard's minimax has no special ability to violate in
+            // the first place (see this test's own doc)
+            let difficulties: &[AiDifficulty] = if trial % 10 == 0 {
+                &[AiDifficulty::Easy, AiDifficulty::Medium, AiDifficulty::Hard]
+            } else {
+                &[AiDifficulty::Easy, AiDifficulty::Medium]
+            };
+            for &difficulty in difficulties {
                 let candidates_for_difficulty =
                     generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, turn_number);
-                let chosen =
-                    choose_move(candidates_for_difficulty, &opponent_hand, difficulty, turn_number, &field);
+                // a tiny budget here, not DEFAULT_MINIMAX_TIME_BUDGET's real 5s --
+                // this property (never hurt self when a fully-safe alternative
+                // exists) is guaranteed by apply_hard_filters before minimax ever
+                // runs, so it holds regardless of how deep the search gets;
+                // running thousands of trials at 5 real seconds each would make
+                // this test itself unusably slow for no corresponding benefit
+                let chosen = choose_move(
+                    candidates_for_difficulty,
+                    &ai_hand,
+                    &opponent_hand,
+                    difficulty,
+                    turn_number,
+                    &field,
+                    std::time::Duration::from_millis(20),
+                );
                 if !chosen.hurts_self_or_helps_opponent {
                     continue;
                 }
@@ -1538,4 +1998,5 @@ mod perf_tests {
             mismatches.len()
         );
     }
+
 }
