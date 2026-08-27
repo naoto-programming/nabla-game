@@ -664,6 +664,15 @@ fn apply_lookahead(
 /// actual move choice, in choose_move_via_minimax) is never capped -- only the
 /// simulated replies/follow-ups explored while evaluating each root candidate are
 const MINIMAX_BRANCH_CAP: usize = 20;
+/// within MINIMAX_BRANCH_CAP, how many slots are reserved for the best-scored
+/// BUILD/REFRESH-style candidates (see is_attacking_move) even if every one of
+/// them scores lower than the top ATTACK-style candidates. A plain top-N-by-score
+/// truncation can starve the search of exactly the moves worth comparing against
+/// an attack: a setup play that pays off two or three plies later never gets a
+/// chance to prove it, because it never even enters the pruned tree. This doesn't
+/// change the total number of candidates explored per node, only which ones --
+/// same cost, broader coverage
+const MINIMAX_MIN_NON_ATTACK_SLOTS: usize = 4;
 /// hard ceiling on search depth in plies (individual moves, not full rounds).
 /// Deliberately shallow: both hands are held static across the whole search (see
 /// this module's own doc), with only the one card actually played at each
@@ -736,6 +745,52 @@ fn hand_after_move(hand: &[Card], mv: &AiMove) -> Vec<Card> {
         remaining.remove(i);
     }
     remaining
+}
+
+/// true if `mv` measurably reduces the ACTING player's opponent -- either fewer
+/// occupied slots on their side, or a smaller expression in one that's still
+/// occupied. A rough ATTACK/not-ATTACK split (see MINIMAX_MIN_NON_ATTACK_SLOTS):
+/// "not attacking" covers everything else a turn can do here -- strengthening or
+/// reorganizing one's own side, since this game has no way to skip a turn, so
+/// there's no separate WAIT category to distinguish from BUILD/REFRESH
+fn is_attacking_move(mv: &AiMove, field: &Field, acting_player: u32) -> bool {
+    (0..6).any(|i| {
+        field_owner(i) != acting_player && {
+            let old_size = field[i].basis.as_ref().map(basis_size).unwrap_or(0);
+            let new_size = mv.resulting_field[i].basis.as_ref().map(basis_size).unwrap_or(0);
+            new_size < old_size
+        }
+    })
+}
+
+/// caps `candidates` to MINIMAX_BRANCH_CAP for exploration at a minimax node
+/// beyond the root, reserving MINIMAX_MIN_NON_ATTACK_SLOTS of that cap for the
+/// best-scored non-attacking (BUILD/REFRESH-style) candidates -- see
+/// MINIMAX_MIN_NON_ATTACK_SLOTS's doc on why a plain top-N-by-score truncation
+/// isn't enough. A no-op (aside from sorting) when there's nothing to trim
+fn select_branch_candidates(
+    mut candidates: Vec<AiMove>,
+    field: &Field,
+    acting_player: u32,
+) -> Vec<AiMove> {
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    if candidates.len() <= MINIMAX_BRANCH_CAP {
+        return candidates;
+    }
+    // `candidates` is already sorted, and partition preserves relative order, so
+    // both resulting groups stay sorted too
+    let (attacking, non_attacking): (Vec<AiMove>, Vec<AiMove>) = candidates
+        .into_iter()
+        .partition(|mv| is_attacking_move(mv, field, acting_player));
+    let non_attack_reserved: Vec<AiMove> = non_attacking
+        .into_iter()
+        .take(MINIMAX_MIN_NON_ATTACK_SLOTS)
+        .collect();
+    let attack_slots = MINIMAX_BRANCH_CAP.saturating_sub(non_attack_reserved.len());
+    let mut selected: Vec<AiMove> = attacking.into_iter().take(attack_slots).collect();
+    selected.extend(non_attack_reserved);
+    selected.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    selected
 }
 
 /// Some(final score, from ai_player_num's point of view) if `mv` ends the game
@@ -851,9 +906,7 @@ fn minimax(
         return Some(evaluate_position(ai_player_num, ai_hand, field, turn_number));
     }
 
-    let mut candidates = candidates;
-    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-    candidates.truncate(MINIMAX_BRANCH_CAP);
+    let candidates = select_branch_candidates(candidates, field, acting_player);
 
     let mut best = if is_maximizing {
         f64::NEG_INFINITY
@@ -1728,6 +1781,57 @@ mod perf_tests {
                 );
             }
         }
+    }
+
+    /// select_branch_candidates must never let a plain top-N-by-score truncation
+    /// starve the search of every non-attacking (BUILD/REFRESH-style) candidate --
+    /// see MINIMAX_MIN_NON_ATTACK_SLOTS's doc on why. Uses synthetic AiMove values
+    /// directly (rather than a real field/hand) to precisely control how many of
+    /// each kind exist and how they're scored, independent of anything
+    /// generate_candidates_for happens to produce for a given position
+    #[test]
+    fn test_select_branch_candidates_reserves_non_attacking_slots() {
+        let field = Field::new(); // opponent (player 1) slots 3-5 start at size-1/1/2
+
+        let make_move = |score: f64, is_attack: bool| {
+            let mut resulting_field = field.clone();
+            if is_attack {
+                // shrinks opponent's slot 3 (field_owner(3) == 1) from size 1 to 0
+                resulting_field[3] = FieldBasis::none();
+            } else {
+                // grows the mover's own slot 0 instead -- never touches the
+                // opponent's side at all
+                resulting_field[0] = FieldBasis::new(&Basis::from(BasisCard::Sin));
+            }
+            AiMove {
+                clicks: vec![],
+                score,
+                resulting_field,
+                wins_immediately: false,
+                hurts_self_or_helps_opponent: false,
+            }
+        };
+
+        // far more attacking candidates than MINIMAX_BRANCH_CAP, every one of them
+        // scored higher than every non-attacking candidate -- a plain top-N
+        // truncation would keep zero non-attacking candidates
+        let mut candidates: Vec<AiMove> = (0..MINIMAX_BRANCH_CAP * 2)
+            .map(|i| make_move(1000.0 + i as f64, true))
+            .collect();
+        candidates.extend((0..MINIMAX_MIN_NON_ATTACK_SLOTS + 2).map(|i| make_move(i as f64, false)));
+
+        let selected = select_branch_candidates(candidates, &field, AI_PLAYER_NUM);
+
+        assert_eq!(selected.len(), MINIMAX_BRANCH_CAP, "should still fill the full cap");
+        let non_attacking_kept = selected
+            .iter()
+            .filter(|mv| !is_attacking_move(mv, &field, AI_PLAYER_NUM))
+            .count();
+        assert_eq!(
+            non_attacking_kept, MINIMAX_MIN_NON_ATTACK_SLOTS,
+            "expected exactly the reserved number of non-attacking candidates to survive, \
+             got {non_attacking_kept}"
+        );
     }
 
     /// broad randomized search for the "AI attacks its own field" report: across
