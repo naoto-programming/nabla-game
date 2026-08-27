@@ -98,7 +98,7 @@ fn side_is_cleared(field: &Field, owner: u32) -> bool {
 /// winning Mult/Div combination would be a real correctness bug, not just an
 /// acceptable approximation
 fn has_winning_move(player_num: u32, hand: &[Card], field: &Field, turn_number: u32) -> bool {
-    generate_candidates_for(player_num, hand, field, turn_number, true)
+    generate_candidates_for(player_num, hand, field, turn_number)
         .iter()
         .any(|mv| mv.wins_immediately)
 }
@@ -122,14 +122,11 @@ pub fn maybe_take_ai_turn() {
 /// purely so the latter can wrap this call in catch_unwind (see its doc)
 fn try_take_ai_turn() {
     let game = unsafe { GAME.as_ref().unwrap() };
-    // true: the AI's own real candidates must include Mult/Div, or it would never
-    // consider (or be able to play) those cards at all
     let candidates = generate_candidates_for(
         AI_PLAYER_NUM,
         &game.player_2,
         &game.field,
         game.turn.number,
-        true,
     );
     if candidates.is_empty() {
         // no legal move within the set the AI can evaluate (eg. hand is entirely
@@ -206,23 +203,25 @@ fn field_owner(target: usize) -> u32 {
 }
 
 /// true if playing `player_num`'s move (which turns `field` into `resulting_field`)
-/// ever shrinks one of `player_num`'s own slots, or grows one of the opponent's --
-/// the two things this game's actual objective (empty the opponent's side, keep
-/// your own non-empty) always makes counter-productive, regardless of which card
-/// produced them. Checks every field slot, so this catches every move type
-/// uniformly -- single-target operators, Nabla/Laplacian's half-field derivative,
-/// Mult/Div's two-slot combine (both the result slot and the sacrificed one), and
-/// BasisCard placement into an empty slot (size 0 -> positive counts as "growing"
-/// that slot, so filling the opponent's empty slot is caught here too) -- without
-/// needing a special case wired into each one individually. A move that merely
-/// leaves a slot's size unchanged (eg. Integral(1) = x, both size 1) is neutral,
-/// not a violation either way
+/// ever clears one of `player_num`'s own slots entirely, or grows one of the
+/// opponent's -- "attacking your own field" specifically means erasing one of its
+/// cards (a slot going from occupied to empty), not merely simplifying it while it
+/// stays occupied: the actual loss condition only cares whether a slot is empty or
+/// not, so shrinking your own x^2 down to x is not a step toward losing the way
+/// clearing it to nothing is, and blocking it as if it were needlessly cost the AI
+/// perfectly good simplifying/defensive plays on its own side. Checks every field
+/// slot, so this catches every move type uniformly -- single-target operators,
+/// Nabla/Laplacian's half-field derivative, Mult/Div's two-slot combine (both the
+/// result slot and the sacrificed one), and BasisCard placement into an empty slot
+/// (size 0 -> positive counts as "growing" that slot, so filling the opponent's
+/// empty slot is caught here too) -- without needing a special case wired into
+/// each one individually
 fn hurts_self_or_helps_opponent(player_num: u32, field: &Field, resulting_field: &Field) -> bool {
     (0..6).any(|i| {
         let old_size = field[i].basis.as_ref().map(basis_size).unwrap_or(0);
         let new_size = resulting_field[i].basis.as_ref().map(basis_size).unwrap_or(0);
         if field_owner(i) == player_num {
-            new_size < old_size
+            new_size == 0 && old_size > 0
         } else {
             new_size > old_size
         }
@@ -345,21 +344,15 @@ fn apply_half_to_field(half_start: usize, is_laplacian: bool, field: &Field) -> 
 /// enumerates legal moves `player_num` knows how to evaluate from `hand` against
 /// `field`, generalized so the same logic can score the AI's own candidates and
 /// predict the opponent's best reply one ply ahead (see apply_lookahead). Mult/Div
-/// are restricted to pairs of field bases (skipping hand-basis operands and 3+-way
-/// combinations) to keep the search small; every other card type is fully covered.
-/// `include_multiselect` gates the Mult/Div branch entirely -- it's the single most
-/// expensive part of this search (up to 30 candidates, each building an actual
-/// symbolic Basis via apply_multi_card), and the *opponent's* simulated reply
-/// (see best_reply_score) only needs a cheap, good-enough danger estimate, not a
-/// fully exhaustive one -- doing a full search on both the AI's own candidates AND
-/// every one of their simulated opponent replies is what made deep lookahead slow
-/// enough to look like the AI had frozen
+/// covers both ways multi_select_phase (events/mousedown_handler.rs) allows
+/// combining two bases: two field slots, or one field slot plus one BasisCard from
+/// hand (eg. multiplying by a "0" in hand to clear a target outright) -- every
+/// other card type is single-target and fully covered by the last match arm below
 fn generate_candidates_for(
     player_num: u32,
     hand: &[Card],
     field: &Field,
     turn_number: u32,
-    include_multiselect: bool,
 ) -> Vec<AiMove> {
     let mut moves = vec![];
 
@@ -420,7 +413,7 @@ fn generate_candidates_for(
                     });
                 }
             }
-            Card::AlgebraicCard(AlgebraicCard::Div | AlgebraicCard::Mult) if include_multiselect => {
+            Card::AlgebraicCard(AlgebraicCard::Div | AlgebraicCard::Mult) => {
                 for a in 0..6 {
                     for b in 0..6 {
                         // Mult/Div combines two of the SAME player's own slots (build up
@@ -481,6 +474,65 @@ fn generate_candidates_for(
                         });
                     }
                 }
+
+                // field slot + a BasisCard from hand (eg. multiplying an opponent's
+                // slot by a "0" in hand to clear it outright) -- multi_select_phase
+                // (events/mousedown_handler.rs) allows exactly this: one field slot
+                // plus one BasisCard from hand as the two operands, consuming the
+                // hand card without freeing up a second field slot (unlike the
+                // field+field case above, there's no second slot to sacrifice). No
+                // same-side restriction applies here, since only one operand is
+                // even a field slot -- every other single-target card can already
+                // aim at either side, and this is no different. Tried in both
+                // (field, hand) and (hand, field) order, since Div is order-
+                // sensitive (numerator/denominator) even though Mult isn't
+                for (hand_index, hand_card) in hand.iter().enumerate() {
+                    let hand_basis_card = match hand_card {
+                        Card::BasisCard(basis_card) => *basis_card,
+                        _ => continue,
+                    };
+                    let hand_basis = Basis::from(hand_basis_card);
+                    let hand_click = RenderId::from(format!("p{player_num}={hand_index}"));
+                    for target in 0..6 {
+                        let field_basis = match &field[target].basis {
+                            Some(basis) => basis.clone(),
+                            None => continue,
+                        };
+                        let field_click = RenderId::from(format!("f={target}"));
+                        let orderings = [
+                            (
+                                vec![field_basis.clone(), hand_basis.clone()],
+                                vec![hand_id, field_click, hand_click, RenderId::Multidone],
+                            ),
+                            (
+                                vec![hand_basis.clone(), field_basis.clone()],
+                                vec![hand_id, hand_click, field_click, RenderId::Multidone],
+                            ),
+                        ];
+                        for (bases, clicks) in orderings {
+                            let result = apply_multi_card(card, bases);
+                            let mut resulting_field = field.clone();
+                            resulting_field[target] = if result.is_num(0) {
+                                FieldBasis::none()
+                            } else {
+                                FieldBasis::new(&result)
+                            };
+                            let score = score_replacement(player_num, target, &result, field)
+                                + strategic_slot_bonus(player_num, &resulting_field);
+                            let wins_immediately =
+                                side_is_cleared(&resulting_field, opponent_of(player_num));
+                            let hurts_self_or_helps_opponent =
+                                hurts_self_or_helps_opponent(player_num, field, &resulting_field);
+                            moves.push(AiMove {
+                                clicks,
+                                score,
+                                resulting_field,
+                                wins_immediately,
+                                hurts_self_or_helps_opponent,
+                            });
+                        }
+                    }
+                }
             }
             // everything else that reaches SELECT phase as a single-target operator:
             // Derivative, Integral, Inverse, Log, Sqrt, and all LimitCard variants
@@ -523,11 +575,16 @@ fn generate_candidates_for(
 /// occupying it (ie. the opponent's best reply after one of the AI's candidate
 /// moves). 0.0 (neutral) if they'd have no legal move to evaluate at all, since being
 /// stuck isn't scored as a loss by this heuristic (see take_ai_turn's own forfeit
-/// handling for the AI's symmetric case). Always searched without Mult/Div (see
-/// generate_candidates_for's include_multiselect doc) -- this is a danger *estimate*,
-/// not the opponent's real move, so it doesn't need to be exhaustive
+/// handling for the AI's symmetric case). Includes Mult/Div: leaving them out of
+/// this estimate meant the AI never noticed a human reply that multiplies/divides
+/// its way to a strong follow-up (or a win missed here would still be caught by
+/// filter_out_losing_moves' own always-exhaustive check, but a merely-strong reply
+/// wouldn't be, undervaluing the danger of the move that allowed it). The same-side
+/// restriction on field+field pairs (see generate_candidates_for) already keeps
+/// this affordable enough for apply_lookahead's Hard-difficulty worst case (see
+/// test_hard_ai_decision_completes_quickly_in_worst_case)
 fn best_reply_score(player_num: u32, hand: &[Card], field: &Field, turn_number: u32) -> f64 {
-    generate_candidates_for(player_num, hand, field, turn_number, false)
+    generate_candidates_for(player_num, hand, field, turn_number)
         .iter()
         .map(|mv| mv.score)
         .fold(f64::MIN, f64::max)
@@ -845,17 +902,22 @@ mod perf_tests {
         let _ = function_composition(&basis, &Basis::x());
     }
 
-    /// stacks the hand with the single most expensive card type (Mult/Div, up to 30
-    /// pair-combinations each) to stress the search as hard as realistically possible
+    /// stacks the hand with the single most expensive card type (Mult/Div) plus
+    /// several BasisCards, to stress both of Mult/Div's combination modes at once:
+    /// field+field pairs (same-side only, see generate_candidates_for) and
+    /// field+hand-card pairs (every occupied field slot combined with every
+    /// BasisCard still in hand, tried in both operand orders) -- a hand with no
+    /// BasisCards at all (an earlier version of this helper) could never exercise
+    /// the field+hand-card branch's own worst case
     fn worst_case_hand() -> Vec<Card> {
         vec![
             Card::AlgebraicCard(AlgebraicCard::Mult),
             Card::AlgebraicCard(AlgebraicCard::Div),
             Card::AlgebraicCard(AlgebraicCard::Mult),
             Card::AlgebraicCard(AlgebraicCard::Div),
-            Card::DerivativeCard(DerivativeCard::Derivative),
-            Card::DerivativeCard(DerivativeCard::Integral),
-            Card::AlgebraicCard(AlgebraicCard::Sqrt),
+            Card::BasisCard(BasisCard::X),
+            Card::BasisCard(BasisCard::X2),
+            Card::BasisCard(BasisCard::Sin),
         ]
     }
 
@@ -914,7 +976,7 @@ mod perf_tests {
         let opponent_hand = ai_hand.clone();
 
         let start = std::time::Instant::now();
-        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 20, true);
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 20);
         assert!(!candidates.is_empty(), "long-game field should still have legal moves");
         let _chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 20, &field);
         let elapsed = start.elapsed();
@@ -940,7 +1002,7 @@ mod perf_tests {
         let opponent_hand = worst_case_hand();
 
         let start = std::time::Instant::now();
-        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4, true);
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
         assert!(!candidates.is_empty(), "worst-case hand should still have legal moves");
         let candidate_count = candidates.len();
         let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
@@ -978,7 +1040,7 @@ mod perf_tests {
         ];
         let opponent_hand = vec![Card::BasisCard(BasisCard::X)];
 
-        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4, true);
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
         assert!(
             candidates.iter().any(|mv| mv.wins_immediately),
             "test setup is wrong: no winning candidate was generated at all"
@@ -988,6 +1050,43 @@ mod perf_tests {
         assert!(
             chosen.wins_immediately,
             "AI had a winning move available but chose a different one instead"
+        );
+    }
+
+    /// the AI's hand can win by multiplying an opponent's last remaining slot by a
+    /// "0" BasisCard in hand (anything times zero is zero, clearing the slot) --
+    /// generate_candidates_for previously only ever paired two FIELD slots for
+    /// Mult/Div, never a field slot with a BasisCard from hand, so this exact move
+    /// (and any other field+hand-card Mult/Div combination) was invisible to the
+    /// AI's search even when it was the only winning move available
+    #[test]
+    fn test_ai_wins_by_multiplying_opponents_last_slot_by_a_zero_from_hand() {
+        let mut field = Field::new();
+        field[4] = FieldBasis::none();
+        field[5] = FieldBasis::none();
+        // field[3] is the opponent's last remaining slot
+        field[3] = FieldBasis::new(&Basis::from(BasisCard::X));
+
+        let ai_hand = vec![
+            Card::AlgebraicCard(AlgebraicCard::Sqrt), // decoy: doesn't win
+            Card::AlgebraicCard(AlgebraicCard::Mult),
+            Card::BasisCard(BasisCard::Zero),
+        ];
+        let opponent_hand = vec![Card::BasisCard(BasisCard::X)];
+
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
+        assert!(
+            candidates.iter().any(|mv| mv.wins_immediately),
+            "test setup is wrong: multiplying field[3] by the hand's 0 should have \
+             produced a winning candidate, but none was generated -- Mult/Div with a \
+             hand BasisCard operand isn't being considered at all"
+        );
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+
+        assert!(
+            chosen.wins_immediately,
+            "AI had a winning move (multiply opponent's last slot by 0 from hand) \
+             available but chose a different one instead"
         );
     }
 
@@ -1016,7 +1115,7 @@ mod perf_tests {
         ];
         let opponent_hand = vec![Card::DerivativeCard(DerivativeCard::Derivative)];
 
-        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4, true);
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
         let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         assert!(
@@ -1049,7 +1148,7 @@ mod perf_tests {
         ];
         let opponent_hand = vec![Card::BasisCard(BasisCard::X)];
 
-        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4, true);
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
         assert!(
             candidates
                 .iter()
@@ -1064,17 +1163,19 @@ mod perf_tests {
         );
     }
 
-    /// direct check of the size-comparison rule hurts_self_or_helps_opponent uses:
-    /// shrinking any of the mover's own slots, or growing any of the opponent's,
-    /// should register as a violation regardless of which slot changed; growing
-    /// your own, shrinking the opponent's, or leaving everything unchanged should not
+    /// direct check of the rule hurts_self_or_helps_opponent uses: clearing any of
+    /// the mover's own slots entirely, or growing any of the opponent's, should
+    /// register as a violation regardless of which slot changed; merely shrinking
+    /// (without clearing) one of the mover's own slots, growing your own, shrinking
+    /// the opponent's, or leaving everything unchanged should not -- "attacking
+    /// your own field" specifically means erasing its card, not simplifying it
     #[test]
     fn test_hurts_self_or_helps_opponent_detects_every_direction() {
         let mut field = Field::new();
         field[0] = FieldBasis::new(&Basis::from(1)); // AI's own slot (player 2), size 1
         field[3] = FieldBasis::new(&Basis::from(1)); // opponent's slot (player 1), size 1
 
-        // shrinking our own slot (clearing it entirely) is a violation
+        // clearing our own slot entirely is a violation
         let mut after = field.clone();
         after[0] = FieldBasis::none();
         assert!(hurts_self_or_helps_opponent(AI_PLAYER_NUM, &field, &after));
@@ -1084,6 +1185,16 @@ mod perf_tests {
         let mut after = field.clone();
         after[0] = FieldBasis::new(&Basis::from(BasisCard::X2));
         assert!(!hurts_self_or_helps_opponent(AI_PLAYER_NUM, &field, &after));
+
+        // merely shrinking our own slot -- without clearing it -- is NOT a
+        // violation: the loss condition only cares whether a slot is empty, not
+        // how simple its expression is, so simplifying x^2 down to x (still
+        // occupied) is not a step toward losing the way clearing it is
+        let mut shrinking_field = field.clone();
+        shrinking_field[0] = FieldBasis::new(&Basis::from(BasisCard::X2)); // size 2
+        let mut after = shrinking_field.clone();
+        after[0] = FieldBasis::new(&Basis::from(BasisCard::X)); // size 1, still occupied
+        assert!(!hurts_self_or_helps_opponent(AI_PLAYER_NUM, &shrinking_field, &after));
 
         // shrinking the opponent's slot (clearing it entirely) is not a violation
         let mut after = field.clone();
@@ -1123,7 +1234,7 @@ mod perf_tests {
         let ai_hand = vec![Card::AlgebraicCard(AlgebraicCard::Mult)];
         let opponent_hand = vec![Card::BasisCard(BasisCard::X)];
 
-        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4, true);
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
         assert!(
             candidates.iter().any(|mv| mv.hurts_self_or_helps_opponent),
             "test setup is wrong: no self-attacking/opponent-strengthening candidate \
@@ -1143,14 +1254,17 @@ mod perf_tests {
     }
 
     #[test]
-    /// Mult/Div combine two field slots into one, always keeping `a` (merged
-    /// result) and discarding `b` -- if `a` and `b` could land on opposite
-    /// sides, a single card play would alter both players' fields at once
-    /// (grow whichever side `a` is on, empty `b`'s slot on the other side),
+    /// Mult/Div's field+field pairing combines two field slots into one, always
+    /// keeping `a` (merged result) and discarding `b` -- if `a` and `b` could land
+    /// on opposite sides, a single card play would alter both players' fields at
+    /// once (grow whichever side `a` is on, empty `b`'s slot on the other side),
     /// unlike every other card, which only ever touches one player's side per
-    /// play. Every field fully occupied maximizes the number of Mult/Div
-    /// candidates generated, giving the cross-side check the most surface
-    /// area to catch a regression on
+    /// play. Every field fully occupied maximizes the number of field+field
+    /// candidates generated, giving the cross-side check the most surface area to
+    /// catch a regression on. The hand holds only the operator card itself (no
+    /// BasisCard), so this exercises just the field+field pairing -- the other
+    /// field+hand-card pairing always targets exactly one field slot and is
+    /// covered separately (see generate_candidates_for's own doc)
     fn test_mult_div_candidates_never_combine_slots_from_both_sides() {
         let mut field = Field::new();
         for i in 0..6 {
@@ -1162,7 +1276,7 @@ mod perf_tests {
             Card::AlgebraicCard(AlgebraicCard::Div),
         ] {
             let hand = vec![card];
-            let candidates = generate_candidates_for(AI_PLAYER_NUM, &hand, &field, 4, true);
+            let candidates = generate_candidates_for(AI_PLAYER_NUM, &hand, &field, 4);
             assert!(
                 !candidates.is_empty(),
                 "test setup is wrong: no {card} candidates were generated at all"
@@ -1263,7 +1377,7 @@ mod perf_tests {
                 .collect();
             let turn_number = rng.gen_range(2..20); // >=2 so Laplacian is in play
 
-            let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, turn_number, true);
+            let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, turn_number);
             if candidates.is_empty() {
                 continue;
             }
@@ -1271,7 +1385,7 @@ mod perf_tests {
 
             for difficulty in [AiDifficulty::Easy, AiDifficulty::Medium, AiDifficulty::Hard] {
                 let candidates_for_difficulty =
-                    generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, turn_number, true);
+                    generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, turn_number);
                 let chosen =
                     choose_move(candidates_for_difficulty, &opponent_hand, difficulty, turn_number, &field);
                 if !chosen.hurts_self_or_helps_opponent {
