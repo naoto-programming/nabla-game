@@ -93,9 +93,8 @@ pub fn branch_turn_phase(id: RenderId, player_num: u32) {
     // confirm button: commits the previewed move
     if id_key == "x" && id_val == 2 && matches!(turn.phase, TurnPhase::CONFIRM) {
         if let Some(pending) = game.pending.take() {
-            let old_field = game.field.clone();
             game.field = pending.field;
-            end_turn(old_field);
+            end_turn();
         }
         return;
     }
@@ -129,9 +128,8 @@ fn commit_or_confirm(new_field: Field, changed_indices: Vec<usize>) {
         });
         next_phase(TurnPhase::CONFIRM);
     } else {
-        let old_field = game.field.clone();
         game.field = new_field;
-        end_turn(old_field);
+        end_turn();
     }
 }
 
@@ -375,7 +373,7 @@ fn multi_select_phase(multi_operator: Card, id: RenderId, player_num: u32) {
 }
 
 /// performs cleanup tasks after turn is over
-fn end_turn(old_field: Field) {
+fn end_turn() {
     let game = unsafe { GAME.as_mut().unwrap() };
 
     // get vector indices of cards used by player this turn
