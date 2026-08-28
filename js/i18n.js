@@ -16,6 +16,8 @@ const translations = {
 		'settings.aiEasy': 'Easy',
 		'settings.aiMedium': 'Medium',
 		'settings.aiHard': 'Hard',
+		'settings.aiLearningMode':
+			'AI Learning Mode (runs background self-play games to improve the AI while this tab is open; progress is saved automatically)',
 		'menu.tutorial': 'Instructions',
 		'menu.settings': 'Settings',
 		'menu.credits': 'Credits',
@@ -61,6 +63,8 @@ const translations = {
 		'settings.aiEasy': '簡単',
 		'settings.aiMedium': '普通',
 		'settings.aiHard': '難しい',
+		'settings.aiLearningMode':
+			'AI学習モード（このタブを開いている間、バックグラウンドで自己対戦を行いAIを強化します。学習内容は自動的に保存されます）',
 		'menu.tutorial': '遊び方',
 		'menu.settings': '設定',
 		'menu.credits': 'クレジット',

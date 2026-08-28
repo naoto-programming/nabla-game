@@ -48,6 +48,7 @@ pub fn main_js() -> Result<(), JsValue> {
         CANVAS = Some(Canvas::new(&document));
         MENU = Some(Menu::new(&document));
     }
+    game::learning::load_persisted_table();
     let canvas = unsafe { CANVAS.as_mut().unwrap() };
 
     canvas.mousedown_listener = Some(EventListener::new(

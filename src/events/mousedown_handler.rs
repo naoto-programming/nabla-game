@@ -93,8 +93,9 @@ pub fn branch_turn_phase(id: RenderId, player_num: u32) {
     // confirm button: commits the previewed move
     if id_key == "x" && id_val == 2 && matches!(turn.phase, TurnPhase::CONFIRM) {
         if let Some(pending) = game.pending.take() {
+            let old_field = game.field.clone();
             game.field = pending.field;
-            end_turn();
+            end_turn(old_field);
         }
         return;
     }
@@ -128,8 +129,9 @@ fn commit_or_confirm(new_field: Field, changed_indices: Vec<usize>) {
         });
         next_phase(TurnPhase::CONFIRM);
     } else {
+        let old_field = game.field.clone();
         game.field = new_field;
-        end_turn();
+        end_turn(old_field);
     }
 }
 
@@ -373,8 +375,20 @@ fn multi_select_phase(multi_operator: Card, id: RenderId, player_num: u32) {
 }
 
 /// performs cleanup tasks after turn is over
-fn end_turn() {
+fn end_turn(old_field: Field) {
     let game = unsafe { GAME.as_mut().unwrap() };
+
+    // feed the learning system with what just happened, before this turn's
+    // card removal/redraw below changes the hand out from under it -- gated to
+    // PLAYAI since that's the only mode where the AI is actually a participant
+    // (see finish_game_and_learn's own doc for why PLAYVS/PLAYONLINE don't
+    // need a matching gate on the other end)
+    if matches!(game.state, GameState::PLAYAI) {
+        let mover = game.get_current_player_num();
+        let hand = if mover == 1 { &game.player_1 } else { &game.player_2 };
+        crate::game::learning::record_real_move(&old_field, &game.field, mover, game.turn.number, hand);
+    }
+
     // get vector indices of cards used by player this turn
     let mut selected_indices = game
         .active
