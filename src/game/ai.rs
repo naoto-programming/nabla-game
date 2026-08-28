@@ -8,7 +8,6 @@ use crate::basis::structs::*;
 use crate::events::mousedown_handler::{branch_turn_phase, next_turn};
 use crate::game::cards::*;
 use crate::game::field::{Field, FieldBasis};
-use crate::game::learning::apply_learned_bias;
 use crate::game::structs::*;
 use crate::math::derivative::derivative;
 use crate::render::util::RenderId;
@@ -66,12 +65,6 @@ pub(super) struct AiMove {
     /// true if this move shrinks any of the mover's own field slots, or grows any
     /// of the opponent's -- see hurts_self_or_helps_opponent
     pub(super) hurts_self_or_helps_opponent: bool,
-    /// hand indices this move consumes (the operator card, plus a BasisCard
-    /// operand for a field+hand-card Mult/Div play) -- same indices already
-    /// computed for flexibility_bonus at each construction site below, kept here
-    /// too so a headless game loop (see learning::simulate_self_play_game) can
-    /// remove the right cards from hand without re-deriving them from `clicks`
-    pub(super) consumed_hand_indices: Vec<usize>,
 }
 
 pub(super) fn opponent_of(player_num: u32) -> u32 {
@@ -149,8 +142,6 @@ fn try_take_ai_turn() {
     let difficulty = unsafe { AI_DIFFICULTY };
     let chosen = choose_move(
         candidates,
-        AI_PLAYER_NUM,
-        &game.player_2,
         &game.player_1,
         difficulty,
         game.turn.number,
@@ -434,7 +425,6 @@ pub(super) fn generate_candidates_for(
                             resulting_field,
                             wins_immediately,
                             hurts_self_or_helps_opponent,
-                            consumed_hand_indices: vec![i],
                         });
                     }
                 }
@@ -454,7 +444,6 @@ pub(super) fn generate_candidates_for(
                         resulting_field,
                         wins_immediately,
                         hurts_self_or_helps_opponent,
-                        consumed_hand_indices: vec![i],
                     });
                 }
             }
@@ -473,7 +462,6 @@ pub(super) fn generate_candidates_for(
                         resulting_field,
                         wins_immediately,
                         hurts_self_or_helps_opponent,
-                        consumed_hand_indices: vec![i],
                     });
                 }
             }
@@ -543,7 +531,6 @@ pub(super) fn generate_candidates_for(
                                 resulting_field,
                                 wins_immediately,
                                 hurts_self_or_helps_opponent,
-                                consumed_hand_indices: vec![i, hand_index],
                             });
                         }
                     }
@@ -585,7 +572,6 @@ pub(super) fn generate_candidates_for(
                             resulting_field,
                             wins_immediately,
                             hurts_self_or_helps_opponent,
-                            consumed_hand_indices: vec![i],
                         });
                     }
                 }
@@ -946,16 +932,13 @@ fn filter_out_opponent_strengthening_moves(candidates: Vec<AiMove>, field: &Fiel
 /// MEDIUM_LOOKAHEAD_POOL candidates and picks randomly from a shrinking top slice
 /// of that adjusted ranking (reasonably aware, not required to be perfect); Easy
 /// skips lookahead entirely and stays mostly random so it remains reliably
-/// beatable. All three then get a further nudge from apply_learned_bias -- see
-/// its own doc -- so the AI plays somewhat better the more self-play and real
-/// games it accumulates, without needing an expensive real-time search to do it.
+/// beatable. This heuristic is hand-tuned, not learned: each concrete mistake
+/// found in real play becomes a regression test in perf_tests (see that
+/// module), with the responsible rule fixed until the test passes.
 /// Deliberately fast (no recursive search): a slow decision reads as frozen to a
-/// human waiting on it, and this game's actual strength should come from what's
-/// been learned, not from how long a single decision is allowed to take
+/// human waiting on it
 pub(super) fn choose_move(
     candidates: Vec<AiMove>,
-    mover: u32,
-    ai_hand: &[Card],
     opponent_hand: &[Card],
     difficulty: AiDifficulty,
     turn_number: u32,
@@ -973,7 +956,6 @@ pub(super) fn choose_move(
         }
         AiDifficulty::Easy => candidates,
     };
-    candidates = apply_learned_bias(candidates, ai_hand, field, mover, turn_number);
     candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
     let mut rng = rand::thread_rng();
 
@@ -1128,7 +1110,7 @@ mod perf_tests {
         let start = std::time::Instant::now();
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 20);
         assert!(!candidates.is_empty(), "long-game field should still have legal moves");
-        let _chosen = choose_move(candidates, AI_PLAYER_NUM, &ai_hand, &opponent_hand, AiDifficulty::Hard, 20, &field);
+        let _chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 20, &field);
         let elapsed = start.elapsed();
 
         assert!(
@@ -1143,8 +1125,8 @@ mod perf_tests {
     /// other field slots and against BasisCards from hand) -- the actual worst
     /// case the real game can produce for candidate generation cost. Since
     /// choose_move no longer does any recursive search (see its doc), this is
-    /// really a check on generate_candidates_for/apply_lookahead/
-    /// apply_learned_bias's own cost, not on any search budget
+    /// really a check on generate_candidates_for/apply_lookahead's own cost,
+    /// not on any search budget
     #[test]
     fn test_hard_ai_decision_completes_quickly_in_worst_case() {
         let field = full_field();
@@ -1155,7 +1137,7 @@ mod perf_tests {
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
         assert!(!candidates.is_empty(), "worst-case hand should still have legal moves");
         let candidate_count = candidates.len();
-        let chosen = choose_move(candidates, AI_PLAYER_NUM, &ai_hand, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
         let elapsed = start.elapsed();
 
         println!(
@@ -1195,7 +1177,7 @@ mod perf_tests {
             candidates.iter().any(|mv| mv.wins_immediately),
             "test setup is wrong: no winning candidate was generated at all"
         );
-        let chosen = choose_move(candidates, AI_PLAYER_NUM, &ai_hand, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         assert!(
             chosen.wins_immediately,
@@ -1231,7 +1213,7 @@ mod perf_tests {
              produced a winning candidate, but none was generated -- Mult/Div with a \
              hand BasisCard operand isn't being considered at all"
         );
-        let chosen = choose_move(candidates, AI_PLAYER_NUM, &ai_hand, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         assert!(
             chosen.wins_immediately,
@@ -1266,7 +1248,7 @@ mod perf_tests {
         let opponent_hand = vec![Card::DerivativeCard(DerivativeCard::Derivative)];
 
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
-        let chosen = choose_move(candidates, AI_PLAYER_NUM, &ai_hand, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         assert!(
             !has_winning_move(1, &opponent_hand, &chosen.resulting_field, 5),
@@ -1305,7 +1287,7 @@ mod perf_tests {
                 .any(|mv| side_is_cleared(&mv.resulting_field, AI_PLAYER_NUM)),
             "test setup is wrong: no self-defeating candidate was generated at all"
         );
-        let chosen = choose_move(candidates, AI_PLAYER_NUM, &ai_hand, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         assert!(
             !side_is_cleared(&chosen.resulting_field, AI_PLAYER_NUM),
@@ -1397,7 +1379,7 @@ mod perf_tests {
             candidates.iter().any(|mv| !mv.hurts_self_or_helps_opponent),
             "test setup is wrong: no safe alternative candidate was generated at all"
         );
-        let chosen = choose_move(candidates, AI_PLAYER_NUM, &ai_hand, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         assert!(
             !chosen.hurts_self_or_helps_opponent,
@@ -1489,8 +1471,8 @@ mod perf_tests {
     /// a real bug, not just tier 2/tier 0 correctly outranking tier 3 when every
     /// tier-3-safe candidate was already eliminated by a higher-priority tier.
     /// This property is guaranteed by apply_hard_filters before any
-    /// difficulty-specific ranking (apply_lookahead/apply_learned_bias) ever
-    /// runs, so it holds regardless of that ranking's own logic
+    /// difficulty-specific ranking (apply_lookahead) ever runs, so it holds
+    /// regardless of that ranking's own logic
     #[test]
     fn test_ai_never_hurts_itself_when_a_fully_safe_alternative_exists() {
         let basis_pool: Vec<Basis> = vec![
@@ -1568,8 +1550,6 @@ mod perf_tests {
                     generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, turn_number);
                 let chosen = choose_move(
                     candidates_for_difficulty,
-                    AI_PLAYER_NUM,
-                    &ai_hand,
                     &opponent_hand,
                     difficulty,
                     turn_number,

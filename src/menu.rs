@@ -207,7 +207,6 @@ impl SettingsMenu {
             "USE_FRACTIONAL_EXPONENTS",
             "LIMIT_FIELD_BASIS",
             "CONFIRM_BEFORE_PLAY",
-            "AI_LEARNING_MODE",
         ]
         .iter()
         .map(|state| {
@@ -236,9 +235,6 @@ impl SettingsMenu {
                         "USE_FRACTIONAL_EXPONENTS" => USE_FRACTIONAL_EXPONENTS = flag_value,
                         "LIMIT_FIELD_BASIS" => LIMIT_FIELD_BASIS = flag_value,
                         "CONFIRM_BEFORE_PLAY" => CONFIRM_BEFORE_PLAY = flag_value,
-                        "AI_LEARNING_MODE" => {
-                            crate::game::learning::set_learning_mode_enabled(flag_value)
-                        }
                         _ => panic!("Unknown flag name: {}", flag_name),
                     }
                 }

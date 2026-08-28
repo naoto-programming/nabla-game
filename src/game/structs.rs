@@ -53,7 +53,6 @@ impl Game {
         deck.shuffle(&mut thread_rng());
 
         let (player_1, player_2) = create_players(&mut deck);
-        super::learning::reset_game_log();
         return Game {
             state: GameState::MENU,
             turn: Turn {
@@ -78,7 +77,6 @@ impl Game {
     /// up with byte-for-byte the same deck and hands, so only the host's
     /// `Game::new()` ever calls the RNG for a given match (see game/online.rs)
     pub fn from_online_parts(deck: Vec<Card>, player_1: Vec<Card>, player_2: Vec<Card>) -> Game {
-        super::learning::reset_game_log();
         Game {
             state: GameState::MENU,
             turn: Turn {
@@ -134,8 +132,6 @@ impl Game {
 
     /// handle losing state
     pub fn game_over(&self, winner: u32) {
-        super::learning::finish_game_and_learn(winner);
-
         let menu = unsafe { MENU.as_ref().unwrap() };
 
         menu.game_over_menu

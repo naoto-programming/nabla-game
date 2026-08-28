@@ -378,17 +378,6 @@ fn multi_select_phase(multi_operator: Card, id: RenderId, player_num: u32) {
 fn end_turn(old_field: Field) {
     let game = unsafe { GAME.as_mut().unwrap() };
 
-    // feed the learning system with what just happened, before this turn's
-    // card removal/redraw below changes the hand out from under it -- gated to
-    // PLAYAI since that's the only mode where the AI is actually a participant
-    // (see finish_game_and_learn's own doc for why PLAYVS/PLAYONLINE don't
-    // need a matching gate on the other end)
-    if matches!(game.state, GameState::PLAYAI) {
-        let mover = game.get_current_player_num();
-        let hand = if mover == 1 { &game.player_1 } else { &game.player_2 };
-        crate::game::learning::record_real_move(&old_field, &game.field, mover, game.turn.number, hand);
-    }
-
     // get vector indices of cards used by player this turn
     let mut selected_indices = game
         .active
