@@ -33,9 +33,14 @@ added purely so there's something steppable/watchable to switch between.
   trade-off best judged against the user's own browser (increasing batch
   size makes each tick heavier -> more stutter risk during a real match in
   progress; shortening tick interval keeps each tick's cost the same but
-  raises total CPU time spent per second), the implementation plan will
-  leave the actual new constants as a small user-authored piece rather than
-  guessing values.
+  raises total CPU time spent per second), rather than hardcoding new
+  constants, both become **live-adjustable number inputs** in Settings
+  (next to the existing checkbox), pre-filled with today's values (3 /
+  150) as the starting point. Changing either restarts the background
+  `Interval` with the new value if learning mode is currently on. This
+  gives the user direct, no-code-change control to find their own
+  comfortable throughput/jank trade-off, rather than the plan guessing a
+  number on their behalf.
 - **UI placement**: extend the existing Settings > "AI Learning Mode"
   section (checkbox + progress readout, `static/index.html`) rather than
   adding a new top-level menu entry. Settings is only reachable from the
@@ -83,13 +88,47 @@ added purely so there's something steppable/watchable to switch between.
   slot once, credits + replaces any that finished.
 - `fn select_training_slot(index: usize)` -- called from the new UI
   buttons.
-- `fn mirror_selected_slot_into_game()` -- called from `self_play_tick`
-  only while the viewer panel is visible; copies the selected
-  `TrainingSlot`'s `field`/`player_1`/`player_2` into the `GAME` singleton
-  and calls `render::draw()`. Visibility is read from a DOM check (does
-  `#training-viewer-panel` have the `hidden` attribute?), mirroring how
-  `update_progress_display` already best-effort-queries the DOM and
-  no-ops if the element isn't there.
+- `SELF_PLAY_BATCH_SIZE` and `SELF_PLAY_TICK_MS` change from `const` to
+  `static mut` (still 3 / 150 as their initial values), plus
+  `fn set_self_play_batch_size(n: u32)` and `fn set_self_play_tick_ms(ms:
+  u32)` -- the latter restarts the `Interval` (via
+  `stop_self_play_loop`/`start_self_play_loop`) with the new duration if
+  learning mode is currently enabled, so a change takes effect
+  immediately rather than after a toggle off/on.
+- `fn sync_training_viewer_display()` -- called from `self_play_tick`
+  every tick, regardless of visibility (cheap when hidden -- see below).
+  Visibility is read from a DOM check (does `#training-viewer-panel` have
+  the `hidden` attribute?), mirroring how `update_progress_display`
+  already best-effort-queries the DOM and no-ops if the element isn't
+  there.
+  - **Required correctness guard**: `GAME::new()` is only ever called at
+    page load, when hosting an online match, and from the "Restart?"
+    GAMEOVER button (`grep`-verified -- no other call site). Starting a
+    new PLAYAI/PLAYVS match from the main menu does *not* reset `GAME`;
+    it reuses whatever `field`/`player_1`/`player_2` are already sitting
+    in the singleton. If the viewer overwrites those fields and nothing
+    ever puts them back, leaving the viewer and starting/resuming a real
+    match would start from stale self-play data instead of the player's
+    actual board.
+  - Fix: a `static mut GAME_SNAPSHOT_BEFORE_VIEWING: Option<(Field,
+    Vec<Card>, Vec<Card>, Vec<Card>)>` (field, player_1, player_2, deck).
+    While the panel is visible: snapshot `GAME`'s current
+    field/hands/deck into it (only if `None`, so repeated ticks don't
+    overwrite the snapshot with already-mirrored training data), then
+    copy the selected `TrainingSlot`'s field/hands/deck into `GAME` and
+    call `render::draw()`. While the panel is hidden: if a snapshot is
+    present, restore it into `GAME` (`Option::take`, so this fires
+    exactly once per viewing session) and redraw; otherwise no-op. Because
+    this runs every tick, it self-heals regardless of *how* the panel
+    became hidden -- "Back" button, the top-level "Main Menu" button, or
+    navigating to another Settings sub-panel -- with no changes needed to
+    those existing button handlers.
+  - One more exit path the tick can't cover: turning "AI Learning Mode"
+    off *while the viewer panel is still open* stops the tick entirely,
+    so the self-healing above would never run. `set_learning_mode_enabled(false)`
+    must restore `GAME_SNAPSHOT_BEFORE_VIEWING` unconditionally (if
+    present) right after `stop_self_play_loop()`, independent of the DOM
+    visibility check.
 
 **Changed files:**
 
@@ -106,14 +145,23 @@ added purely so there's something steppable/watchable to switch between.
   read-only, and incidentally closing a latent gap in the existing code
   (nothing today prevents this same class of stray click if a field/hand
   ever gets rendered outside a live match state).
-- `static/index.html` -- inside the existing "AI Learning Mode" section: a
+- `static/index.html` -- wraps `menu-SETTINGS`'s existing content (AI
+  Difficulty select through the "Change Card Counts" button) in a new
+  `#settings-main-content` container so it can be hidden as a block while
+  the viewer is open. Inside the existing "AI Learning Mode" section: a
   "Watch" button, plus a new `#training-viewer-panel` sub-panel (hidden by
   default, following the `online-create-panel`/`online-join-panel`
-  pattern already used for `menu-PLAYONLINE`) containing 10 slot-select
+  pattern already used for `menu-PLAYONLINE` -- a plain nested `<div>`,
+  not a `Menu::activate`-level `.menu-item`) containing 10 slot-select
   buttons ("Game 1".."Game 10") and a "Back" button. No new `<canvas>` --
-  see Viewer panel layout below. The throughput preset control (batch
-  size / tick interval) is added alongside the existing checkbox, not
-  inside this sub-panel.
+  see Viewer panel layout below. Two number inputs, "Batch size per tick"
+  and "Tick interval (ms)" (pre-filled 3 / 150), are added alongside the
+  existing checkbox, inside `#settings-main-content` (not the viewer
+  sub-panel).
+- `static/index.css` -- `#menu.viewing { background: none; }`, plus a
+  small backing style for `#training-viewer-panel`'s controls (opaque bar
+  pinned to the top of the viewport) so they stay legible over the
+  animated board.
 - `js/i18n.js` -- labels for the new controls.
 - `src/menu.rs` -- wiring for the slot-select buttons and throughput
   preset control, following the existing `AI_LEARNING_MODE` checkbox
@@ -137,14 +185,18 @@ which is required for this reuse to be safe.
    one move. A slot that just finished has its `recorded_moves` folded
    into the learned table via the existing `record_game_outcome`, then is
    immediately replaced by `TrainingSlot::new(..)` -- no idle slots.
-3. If the viewer sub-panel is visible, the tick also mirrors
-   `TRAINING_POOL[SELECTED_TRAINING_SLOT]` into `GAME` and redraws.
+3. Every tick, `sync_training_viewer_display()` checks
+   `#training-viewer-panel`'s visibility: if visible, snapshots `GAME`'s
+   real field/hands/deck on first entry, then mirrors
+   `TRAINING_POOL[SELECTED_TRAINING_SLOT]` into `GAME` and redraws; if
+   hidden and a snapshot exists, restores it into `GAME` once and redraws.
 4. Clicking a "Game N" button calls `select_training_slot(N)`; the next
    tick's mirror step picks it up. No slot is paused or restarted by
    switching -- all 10 keep advancing regardless of which is displayed.
-5. Turning learning mode off stops the tick (existing behavior) and
-   leaves `TRAINING_POOL` as-is (frozen, stale display) until re-enabled,
-   which reinitializes it fresh.
+5. Turning learning mode off stops the tick (existing behavior), restores
+   `GAME_SNAPSHOT_BEFORE_VIEWING` if one is pending (see above), and
+   leaves `TRAINING_POOL` as-is (frozen) until re-enabled, which
+   reinitializes it fresh.
 
 ## Testing
 
@@ -166,25 +218,46 @@ which is required for this reuse to be safe.
   click directly on the displayed board and confirm nothing happens (no
   SELECT/CONFIRM phase entered, `GAME.state` unchanged), then click "Back"
   and confirm the mirror-and-redraw step stops (no further canvas
-  updates from the pool).
+  updates from the pool). Also verify the snapshot/restore guard: note
+  the real field/hand state (or lack thereof) before clicking "Watch",
+  watch training games for a few seconds, click "Back" (and separately,
+  in another pass, exit via the top "Main Menu" button instead of "Back"),
+  then start a "Play vs AI" match and confirm it begins from a fresh
+  board, not from leftover self-play data.
 
 ## Viewer panel layout
 
 `static/index.html` has `#menu` (all menu panels, including
-`menu-SETTINGS`) as a sibling of `#canvas`, not nested inside it -- the
-menu overlay covers the canvas while open, the same way
-`menu-PLAYONLINE` already nests togglable sub-panels (`online-create-panel`
-/ `online-join-panel`) inside itself for its Create/Join flow. The viewer
-follows that exact existing pattern instead of trying to carve a
-transparent cutout into the Settings overlay: a new "Watch" button inside
-the AI Learning Mode section swaps the panel's content to a
-`training-viewer-panel` sub-panel (hidden by default, like the online
-sub-panels) that fills the space normally occupied by the menu and reveals
-`#canvas` underneath at its normal full position/coordinates -- no second
-`<canvas>`, no `Canvas`/`CANVAS` singleton changes, no CSS cutout. A
-"Back" button returns to the normal Settings list (hides
-`training-viewer-panel`, stops the mirror-and-redraw step in the next
-tick per the visibility check in `mirror_selected_slot_into_game`).
+`menu-SETTINGS`) as a sibling of `#canvas`, not nested inside it, the same
+way `menu-PLAYONLINE` already nests togglable sub-panels
+(`online-create-panel` / `online-join-panel`) inside itself for its
+Create/Join flow. `#menu` is `position: fixed`, full-viewport, `z-index:
+3`, with an **opaque** `background-color: white` + `bg.png`
+(`static/index.css:71-78`) -- it fully covers both `#canvas` (`z-index:
+1`) and `#katex` (`z-index: 2`, the absolutely-positioned DOM layer KaTeX
+renders card expressions into, matching canvas pixel coordinates -- the
+board's math text is *not* part of the canvas bitmap). Reusing
+`render::draw()` alone is therefore not enough to make anything visible;
+`#menu`'s own background has to become transparent too while the viewer
+is open, or neither the canvas nor the card text underneath shows through.
+
+The viewer panel: a new "Watch" button inside the AI Learning Mode section
+swaps the panel's content to a `#training-viewer-panel` sub-panel (hidden
+by default, like the online sub-panels), and toggles a `viewing` CSS class
+on `#menu` itself (`element.class_list().add_1("viewing")` /
+`.remove_1("viewing")` from `menu.rs`, alongside the existing
+hidden-attribute toggling). A new CSS rule,
+`#menu.viewing { background: none; }`, is the only new styling needed to
+reveal `#canvas`/`#katex` underneath at their normal full position and
+coordinates -- no second `<canvas>`, no `Canvas`/`CANVAS` singleton
+changes. `#training-viewer-panel`'s own controls (the 10 slot-select
+buttons, a "Back" button) need their own small opaque backing box (plain
+CSS, e.g. a semi-opaque bar pinned to the top of the viewport) so they
+stay legible against the moving board underneath. "Back" removes the
+`viewing` class, hides `#training-viewer-panel`, and returns to the
+normal Settings list; the mirror-and-redraw step stops on the next tick
+once `#training-viewer-panel` is hidden again (per the visibility check in
+`mirror_selected_slot_into_game`).
 
 ## Explicitly out of scope
 
