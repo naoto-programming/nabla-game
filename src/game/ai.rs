@@ -2102,6 +2102,7 @@ mod perf_tests {
              (a mild reward), got {strengthen_score}"
         );
     }
+
     /// reproduces a real loss (decoded from a reported Copy Match Data string):
     /// the AI's only own slot held plain x, and the human held Limsup. lim(x->inf)
     /// of a plain leaf x is +inf (see limits.rs's BasisLeaf/X arm), which the real

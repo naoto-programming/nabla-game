@@ -73,3 +73,31 @@ fn test_tabular_integration() {
     println!("I({}) = {}", a, b);
     assert_eq!(integral(&a), b);
 }
+
+/// reproduces a reported freeze: playing Integral against x^2 * sqrt(log(cos(x^2)))
+/// (a real field state from a match report) took over a minute without
+/// returning. Tabular integration by parts (see tabular_integration in
+/// src/math/integral.rs) assumes dv's repeated integrals stay about as simple
+/// as dv itself -- true for its intended targets (sin(x)/cos(x)/e^x, all size
+/// 2), but sqrt(log(cos(x^2))) is not one of those, so each successive
+/// integral() call in its loop operated on an already-more-complex result,
+/// compounding into an exponential blowup that never panics or exceeds
+/// ComputeDepthGuard's recursion-depth cap (it's iterative growth across loop
+/// iterations, not recursion depth). This only checks that integral() returns
+/// promptly -- not what it returns, since falling back to a symbolic
+/// placeholder rather than a fully expanded closed form is the whole point of
+/// the fix
+#[test]
+fn test_tabular_integration_does_not_hang_on_a_non_elementary_dv() {
+    let pathological = (Basis::x() ^ 2) * ((log(&cos(&(Basis::x() ^ 2)))) ^ (1, 2));
+
+    let start = std::time::Instant::now();
+    let _ = integral(&pathological);
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed.as_millis() < 2000,
+        "integral() took {:?} against a non-elementary tabular dv -- too slow, risks looking frozen",
+        elapsed
+    );
+}

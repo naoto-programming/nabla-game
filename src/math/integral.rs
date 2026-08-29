@@ -213,6 +213,28 @@ fn substitution_integration(basis_node: &BasisNode) -> Basis {
     IntBasisNode(&Basis::BasisNode(basis_node.clone()))
 }
 
+/// how many nodes dv's repeated integrals are allowed to grow to before
+/// tabular_integration gives up and falls back to a symbolic placeholder.
+/// Tabular integration by parts is only sound/cheap when dv's repeated
+/// integrals stay about as simple as dv itself -- true for its intended
+/// targets (sin(x), cos(x), e^x, each size 2, whose integrals cycle back to
+/// the same size forever). For anything else (eg. a nested
+/// sqrt(log(cos(x^2)))), each successive integral() call in the loop below
+/// operates on an already-more-complex result, compounding into an
+/// exponential blowup that can run for minutes without ever panicking or
+/// exceeding ComputeDepthGuard's recursion-depth cap (this is iterative
+/// growth across loop iterations, not recursion depth). 12 is generous
+/// headroom over the size-2 intended cases while still catching real blowups
+/// after their very first (already-too-big) integration
+const TABULAR_INTEGRATION_SIZE_CAP: u32 = 12;
+
+fn basis_node_count(basis: &Basis) -> u32 {
+    match basis {
+        Basis::BasisLeaf(_) => 1,
+        Basis::BasisNode(node) => 1 + node.operands.iter().map(basis_node_count).sum::<u32>(),
+    }
+}
+
 /// performs tabular integration for repeated integration by parts
 pub fn tabular_integration(u: &Basis, dv: &Basis) -> Basis {
     // currently only supports x^n * f(x)
@@ -221,13 +243,17 @@ pub fn tabular_integration(u: &Basis, dv: &Basis) -> Basis {
         ..
     }) = u
     {
+        let original = MultBasisNode(vec![u.clone(), dv.clone()]);
         let mut elements: Vec<Basis> = vec![];
         let mut v = dv.clone();
-        let mut u = u.clone();
+        let mut cur_u = u.clone();
         for i in 0..=*n {
             v = integral(&v);
-            elements.push(u.clone() * v.clone() * if i % 2 == 1 { -1 } else { 1 });
-            u = derivative(&u);
+            if basis_node_count(&v) > TABULAR_INTEGRATION_SIZE_CAP {
+                return IntBasisNode(&original);
+            }
+            elements.push(cur_u.clone() * v.clone() * if i % 2 == 1 { -1 } else { 1 });
+            cur_u = derivative(&cur_u);
         }
         return AddBasisNode(elements);
     }
