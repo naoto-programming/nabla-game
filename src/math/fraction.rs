@@ -47,7 +47,17 @@ impl Fraction {
 
     /// reduces fraction to lowest terms
     pub fn simplify(self) -> Self {
-        if self.n == 0 || self.d == 0 {
+        if self.n == 0 {
+            // canonical zero, regardless of the denominator it arrived with (eg.
+            // {0,2} from scaling an already-zero coefficient) -- every zero-check
+            // elsewhere (PartialEq<i32>, Basis::is_num, AddBasisNode's own-zero
+            // filter) requires d==1, so a non-canonical {0,d} silently evades all
+            // of them, leaving a visible "(0/2) * ..." term that then keeps
+            // getting re-differentiated/re-integrated turn after turn instead of
+            // vanishing
+            return Fraction { n: 0, d: 1 };
+        }
+        if self.d == 0 {
             return self;
         }
 
@@ -173,9 +183,9 @@ impl Add<(i32, i32)> for Fraction {
 
     fn add(self, (n, d): (i32, i32)) -> Self {
         if self.n == 0 || self.d == 0 {
-            return Fraction { n, d };
+            return Fraction { n, d }.simplify();
         } else if n == 0 || d == 0 {
-            return self;
+            return self.simplify();
         }
         // saturating, not plain *, +: repeatedly adding fractions with growing
         // denominators (eg. the AI's search integrating an already-nested

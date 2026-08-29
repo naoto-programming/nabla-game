@@ -104,6 +104,19 @@ fn has_winning_move(player_num: u32, hand: &[Card], field: &Field, turn_number: 
         .any(|mv| mv.wins_immediately)
 }
 
+/// true if `player_num` has at least one legal move against `field` with
+/// `hand` -- eg. false for a hand of only Mult/Div cards with no BasisCard
+/// among them, since multi_select_phase only accepts a field slot plus a
+/// BasisCard from hand as Mult/Div's two operands (field+field is
+/// deprecated, see generate_candidates_for's own doc). Mirrors the exact
+/// check try_take_ai_turn already uses to forfeit the AI's own turn instead
+/// of hanging it; exposed here (pub, not pub(super)) so next_turn in
+/// events/mousedown_handler.rs can apply the same rule to a human player,
+/// who otherwise has no way to end a turn they can't act on at all
+pub fn player_has_any_legal_move(player_num: u32, hand: &[Card], field: &Field, turn_number: u32) -> bool {
+    !generate_candidates_for(player_num, hand, field, turn_number).is_empty()
+}
+
 /// if it's now the AI's turn in a PLAYAI game, schedules its move after a short
 /// delay (purely for pacing -- an instant move reads as unresponsive/broken)
 pub fn maybe_take_ai_turn() {

@@ -472,6 +472,22 @@ pub fn next_turn() {
     } else if field.clone().skip(3).all(|f| f.basis.is_none()) {
         // player 2 wins
         game.game_over(2);
+    } else if matches!(game.state, GameState::PLAYAI | GameState::PLAYVS)
+        && !crate::game::ai::player_has_any_legal_move(
+            game.get_current_player_num(),
+            if game.get_current_player_num() == 1 { &game.player_1 } else { &game.player_2 },
+            &game.field,
+            game.turn.number,
+        )
+    {
+        // stuck with no legal move at all (eg. a hand of only Mult/Div cards
+        // with no BasisCard operand) -- forfeit straight through, the same
+        // way try_take_ai_turn already does for the AI, instead of leaving a
+        // human turn nothing can advance. Not applied to PLAYONLINE: the two
+        // peers only stay in sync by replaying each other's actual clicks
+        // (see game/online.rs), and this local-only check has no way to tell
+        // the remote side to advance in lockstep
+        next_turn();
     } else {
         crate::game::ai::maybe_take_ai_turn();
     }
