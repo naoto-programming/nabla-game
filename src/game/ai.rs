@@ -253,6 +253,19 @@ fn is_hard_to_clear(basis: &Basis) -> bool {
     }
 }
 
+/// true if applying a card and getting `result` would empty the target slot --
+/// mirrors the real game's own clearing rule exactly (see select_turn_phase in
+/// events/mousedown_handler.rs, which sets the slot to None on 0, +inf, or
+/// -inf). The AI's own candidate scoring previously only checked is_num(0)
+/// here, so it never recognised a Limit card's result (which is almost always
+/// +inf/-inf for anything but an oscillating shape, not exactly 0) as clearing
+/// anything -- meaning wins_immediately, has_winning_move, and every hard
+/// filter built on them (self-defeat, immediate-loss avoidance) were blind to
+/// the single most common way a slot actually gets cleared in real play
+fn clears_slot(result: &Basis) -> bool {
+    result.is_num(0) || result.is_inf(1) || result.is_inf(-1)
+}
+
 /// how much a scarce clearing play (Mult/Div-by-zero, or any other card that
 /// happens to zero this specific target) is worth spending on `basis` specifically,
 /// on top of the flat "cleared an opponent slot" bonus every clear already gets.
@@ -279,7 +292,7 @@ fn clear_priority_bonus(basis: &Basis) -> f64 {
 fn score_replacement(evaluating_player: u32, target: usize, new_basis: &Basis, field: &Field) -> f64 {
     let is_opponent_side = field_owner(target) != evaluating_player;
     let old_size = field[target].basis.as_ref().map(basis_size).unwrap_or(0);
-    let new_size = if new_basis.is_num(0) {
+    let new_size = if clears_slot(new_basis) {
         0
     } else {
         basis_size(new_basis)
@@ -605,7 +618,7 @@ pub(super) fn generate_candidates_for(
                     if let Some(basis) = &field[target].basis {
                         let result = apply_card(card)(basis);
                         let mut resulting_field = field.clone();
-                        resulting_field[target] = if result.is_num(0) {
+                        resulting_field[target] = if clears_slot(&result) {
                             FieldBasis::none()
                         } else {
                             FieldBasis::new(&result)
@@ -880,18 +893,16 @@ fn evaluate_limit_strategy(
 ) -> f64 {
     let is_opponent_side = field_owner(target) != player_num;
     let old_size = field[target].basis.as_ref().map(basis_size).unwrap_or(0);
-    let new_size = if result.is_num(0) { 0 } else { basis_size(result) };
-    
-    // Check if this clears the slot (result is 0 or effectively simple)
-    let clears_slot = result.is_num(0) || new_size < old_size;
-    
+    let is_clear = clears_slot(result);
+    let new_size = if is_clear { 0 } else { basis_size(result) };
+
     // Bonus for clearing opponent's slot with limit
-    if is_opponent_side && clears_slot {
+    if is_opponent_side && is_clear {
         return 150.0;
     }
     
     // Penalty for clearing own slot unless it saves from immediate loss
-    if !is_opponent_side && clears_slot {
+    if !is_opponent_side && is_clear {
         // Check if we're in danger (few slots remaining)
         let own_slots_remaining: u32 = (0..6)
             .filter(|&i| field_owner(i) == player_num)
@@ -2076,6 +2087,60 @@ mod perf_tests {
             strengthen_score > 1.0,
             "growing the AI's own slot should score above the neutral baseline \
              (a mild reward), got {strengthen_score}"
+        );
+    }
+    /// reproduces a real loss (decoded from a reported Copy Match Data string):
+    /// the AI's only own slot held plain x, and the human held Limsup. lim(x->inf)
+    /// of a plain leaf x is +inf (see limits.rs's BasisLeaf/X arm), which the real
+    /// game's select_turn_phase treats as clearing the slot (is_num(0) OR
+    /// is_inf(1) OR is_inf(-1)) -- but generate_candidates_for only ever checked
+    /// is_num(0), so has_winning_move/wins_immediately were blind to this threat
+    /// entirely, and every hard filter built on them (self-defeat and
+    /// immediate-loss avoidance) let it straight through. Root cause fixed via
+    /// the shared clears_slot helper, mirroring select_turn_phase exactly
+    #[test]
+    fn test_ai_recognizes_a_limit_cards_divergence_as_clearing_the_slot() {
+        let mut field = Field::new();
+        field[0] = FieldBasis::none();
+        field[1] = FieldBasis::new(&Basis::x());
+        field[2] = FieldBasis::none();
+        field[3] = FieldBasis::none();
+        field[4] = FieldBasis::new(&Basis::x());
+        field[5] = FieldBasis::new(&Basis::from(BasisCard::X2));
+
+        let ai_hand = vec![
+            Card::DerivativeCard(DerivativeCard::Nabla),
+            Card::BasisCard(BasisCard::One),
+            Card::AlgebraicCard(AlgebraicCard::Inverse),
+            Card::LimitCard(LimitCard::LimPosInf),
+            Card::DerivativeCard(DerivativeCard::Derivative),
+            Card::BasisCard(BasisCard::Sin),
+            Card::DerivativeCard(DerivativeCard::Integral),
+        ];
+        let human_hand = vec![
+            Card::LimitCard(LimitCard::Limsup),
+            Card::AlgebraicCard(AlgebraicCard::Inverse),
+            Card::AlgebraicCard(AlgebraicCard::Mult),
+            Card::DerivativeCard(DerivativeCard::Integral),
+            Card::BasisCard(BasisCard::Sin),
+            Card::DerivativeCard(DerivativeCard::Nabla),
+            Card::BasisCard(BasisCard::E),
+        ];
+
+        assert!(
+            has_winning_move(1, &human_hand, &field, 8),
+            "test setup is wrong: the human's Limsup should already be a winning \
+             reply against the AI's lone plain-x slot"
+        );
+
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 7);
+        let chosen = choose_move(candidates, &human_hand, AiDifficulty::Hard, 7, &field);
+
+        assert!(
+            !has_winning_move(1, &human_hand, &chosen.resulting_field, 8),
+            "AI chose a move that still leaves the human a winning Limsup reply \
+             -- chosen.clicks={:?}",
+            chosen.clicks
         );
     }
 }
