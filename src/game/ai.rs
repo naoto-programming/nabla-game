@@ -253,6 +253,21 @@ fn is_hard_to_clear(basis: &Basis) -> bool {
     }
 }
 
+/// how much a scarce clearing play (Mult/Div-by-zero, or any other card that
+/// happens to zero this specific target) is worth spending on `basis` specifically,
+/// on top of the flat "cleared an opponent slot" bonus every clear already gets.
+/// Two factors, both about "how much did this target actually need clearing":
+/// is_hard_to_clear's flat bonus (nothing else in the AI's toolkit reaches
+/// trig/exponential shapes at all), plus a bonus scaled by the target's own
+/// complexity (basis_size) -- among 1, x, and x^2, all three are reachable by
+/// ordinary cards, but x^2 is furthest from already being gone, so clearing it
+/// outright is worth more than clearing an already-simple x or 1
+fn clear_priority_bonus(basis: &Basis) -> f64 {
+    let hard_bonus = if is_hard_to_clear(basis) { 100.0 } else { 0.0 };
+    let size_bonus = basis_size(basis) as f64 * 10.0;
+    hard_bonus + size_bonus
+}
+
 /// scores replacing `field[target]` with `new_basis`, from `evaluating_player`'s
 /// point of view: rewards clearing/simplifying the OTHER player's slot (progress
 /// toward winning), penalises clearing evaluating_player's own slot. Reused both to
@@ -274,15 +289,11 @@ fn score_replacement(evaluating_player: u32, target: usize, new_basis: &Basis, f
     if is_opponent_side {
         score += if new_size == 0 && old_size > 0 {
             // clearing an opponent slot is always the highest priority, but
-            // clearing one nothing else could have reached (see is_hard_to_clear)
-            // is worth even more, so a scarce Mult/Div-by-zero play gets routed to
-            // the target that actually needed it
-            let hard_bonus = if field[target].basis.as_ref().map_or(false, is_hard_to_clear) {
-                100.0
-            } else {
-                0.0
-            };
-            200.0 + hard_bonus
+            // clearing a target that actually needed clearing (see
+            // clear_priority_bonus) is worth even more, so a scarce clearing play
+            // gets routed to whichever target benefits most from it
+            let bonus = field[target].basis.as_ref().map_or(0.0, |b| clear_priority_bonus(b));
+            200.0 + bonus
         } else if new_size < old_size {
             (old_size as f64 - new_size as f64) * 10.0 // strongly reward simplifying opponent
         } else if new_size > old_size {
@@ -1873,6 +1884,42 @@ mod perf_tests {
                 targeted_cos,
                 "cos at slot {cos_slot}, x at slot {x_slot}: expected the AI's only \
                  zero-clear play to target the harder-to-clear cos slot, got clicks={:?}",
+                chosen.clicks
+            );
+        }
+    }
+
+    /// among targets that are all otherwise reachable by ordinary cards (so
+    /// is_hard_to_clear is false for both), clear_priority_bonus should still
+    /// prefer the larger one: x^2 (basis_size 2) is further from already being
+    /// gone than a plain x (basis_size 1), so a scarce zero-clear play should be
+    /// routed there first. Run with the two targets in both slot orderings, same
+    /// reasoning as test_ai_prioritizes_the_harder_to_clear_opponent_target
+    #[test]
+    fn test_ai_prioritizes_clearing_the_larger_of_two_otherwise_equal_targets() {
+        for (x2_slot, x_slot) in [(3usize, 4usize), (4usize, 3usize)] {
+            let mut field = Field::new();
+            field[0] = FieldBasis::new(&Basis::from(BasisCard::X));
+            field[1] = FieldBasis::none();
+            field[2] = FieldBasis::none();
+            field[x2_slot] = FieldBasis::new(&Basis::from(BasisCard::X2));
+            field[x_slot] = FieldBasis::new(&Basis::from(BasisCard::X));
+            field[5] = FieldBasis::none();
+
+            let ai_hand = vec![
+                Card::AlgebraicCard(AlgebraicCard::Mult),
+                Card::BasisCard(BasisCard::Zero),
+            ];
+            let opponent_hand: Vec<Card> = vec![];
+
+            let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
+            let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+            let targeted_x2 = chosen.clicks.iter().any(|c| c.is_field() && c.key_val().1 == x2_slot);
+
+            assert!(
+                targeted_x2,
+                "x^2 at slot {x2_slot}, x at slot {x_slot}: expected the AI's only \
+                 zero-clear play to target the larger x^2 slot, got clicks={:?}",
                 chosen.clicks
             );
         }
