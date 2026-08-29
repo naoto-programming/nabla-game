@@ -135,3 +135,33 @@ fn test_log_derivatives() {
     println!("d/dx({}) = {}", a, b);
     assert_eq!(derivative(&a), b);
 }
+
+/// reproduces a reported multi-second AI decision delay: playing Inverse
+/// against a field slot the game couldn't cleanly invert (eg. sin(x)/x) wraps
+/// it as InvBasisNode(sin(x)/x) -- inverse()'s "give up" placeholder for an
+/// operator with no known symbolic inverse, not a genuine functional inverse.
+/// Differentiating that used to run the real inverse-function-rule formula
+/// (1/f'(f-1(x))) via function_composition regardless, substituting the WHOLE
+/// wrapped expression into every x in 1/f'(x); harmless for a bare-x operand
+/// (the only case the rule is actually meaningful for), but the result's size
+/// multiplies with the operand's size for anything else -- and compounds
+/// further if the AI's lookahead differentiates an already-stacked or
+/// already-differentiated Inv placeholder again. It should just return the
+/// input unchanged instead
+#[test]
+fn test_inv_derivative_of_a_non_trivial_placeholder_is_fast_and_unchanged() {
+    use nabla_game::basis::builders::InvBasisNode;
+
+    let non_trivial = InvBasisNode(&(sin_x() / Basis::x()));
+
+    let start = std::time::Instant::now();
+    let result = derivative(&non_trivial);
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed.as_millis() < 500,
+        "derivative() took {:?} against a non-trivial Inv placeholder -- too slow, risks looking frozen",
+        elapsed
+    );
+    assert_eq!(result, non_trivial, "should bail out to the unchanged input");
+}

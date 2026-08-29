@@ -74,7 +74,22 @@ pub fn derivative(basis: &Basis) -> Basis {
                 (operands[0].clone() * coefficient.n)
                     / (((Basis::from(1) - (operands[0].clone() ^ 2)) ^ (1, 2)) * coefficient.d)
             }
-            // inverse rule, d(f-1(x)) = 1/f-1(f')(f-1(x))
+            // inverse rule, d(f-1(x)) = 1/f-1(f')(f-1(x)) -- only meaningful
+            // when operands[0] genuinely is the compositional inverse's bare
+            // argument (x). In practice every Inv node in this codebase is
+            // actually inverse()'s "couldn't invert this cleanly" placeholder
+            // (its final fallback wraps the ORIGINAL un-inverted expression,
+            // not a plain x -- see InvBasisNode's call site there), so
+            // operands[0] is usually a whole sub-expression. Composing that
+            // into every x in 1/f'(x) below still runs, but the result's size
+            // multiplies with each x-occurrence, and repeating this (eg. a
+            // second Inverse/Derivative stacking on an already-wrapped slot)
+            // compounds further each time -- reported as several seconds of
+            // AI "thinking" once its own field held a stacked/non-trivial Inv
+            // placeholder. Bail out to the unchanged input, the same
+            // convention ComputeDepthGuard uses elsewhere in this function,
+            // rather than computing a slow result of dubious meaning
+            BasisOperator::Inv if !operands[0].is_x() => basis.clone(),
             BasisOperator::Inv => {
                 let inverse_derivative = !derivative(&operands[0]);
                 function_composition(&inverse_derivative, &operands[0]) / coefficient.d
