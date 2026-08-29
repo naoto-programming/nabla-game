@@ -140,6 +140,22 @@ fn test_complex_basis_limits() {
     assert_eq!(limit(&LimitCard::LimPosInf)(&a), None);
 }
 
+/// lim(x->+-inf) of x^-2 = 1/x^2 -> 0. PowBasisNode's INF^x/(-INF)^x short-circuits
+/// (hit here via the Pow branch's is_inf check in math/limits.rs) previously
+/// ignored the sign of the exponent, always returning INF -- so a negative
+/// exponent (which should send the result to 0, not INF) was computed wrong,
+/// hiding a real slot-clearing win/loss condition from anything checking
+/// is_num(0) against the result (see game/cards.rs::apply_card's LimitCard arm)
+#[test]
+fn test_limit_inf_of_negative_power() {
+    let a = Basis::x() ^ -2;
+    let b = Basis::from(0);
+    println!("lim, x→INF({}) = {}", a, b);
+    assert_eq!(limit(&LimitCard::LimPosInf)(&a).unwrap(), b);
+    println!("lim, x→-INF({}) = {}", a, b);
+    assert_eq!(limit(&LimitCard::LimNegInf)(&a).unwrap(), b);
+}
+
 /// limit() of an unresolved Inv node (inverse() falls back to InvBasisNode when it
 /// can't find an actual inverse, eg. for sin(x) + cos(x)) previously panicked via
 /// an unimplemented!() rather than returning None like every other not-yet-handled

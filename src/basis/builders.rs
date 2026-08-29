@@ -612,12 +612,20 @@ pub fn PowBasisNode(n: i32, d: i32, base: &Basis) -> Basis {
     else if base.is_num(0) || base.is_num(1) {
         return base.clone();
     }
-    // INF^x = INF
+    // INF^x = INF for x > 0, but INF^-x = 1/INF^x -> 0 -- the sign of the
+    // exponent was previously ignored here, so eg. lim(x->+inf) of x^-2 (which
+    // reaches this via the Pow branch's is_inf(1) short-circuit in
+    // math/limits.rs) incorrectly evaluated to INF instead of 0, hiding a real
+    // win/loss condition from anything that checks is_num(0) against the result
     else if base.is_inf(1) {
-        return Basis::inf(1);
+        return if pow.n < 0 { Basis::from(0) } else { Basis::inf(1) };
     }
-    // (-INF)^x = INF | -INF
+    // (-INF)^x = INF | -INF for x > 0 (sign per parity); (-INF)^-x -> 0, same
+    // reasoning as the INF case above
     else if base.is_inf(-1) {
+        if pow.n < 0 {
+            return Basis::from(0);
+        }
         // odd power
         if pow.n % 2 == 1 && pow.d % 2 == 1 {
             return Basis::inf(-1);

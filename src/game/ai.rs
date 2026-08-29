@@ -1865,4 +1865,66 @@ mod perf_tests {
             );
         }
     }
+
+    /// reproduces a real loss: the AI's only own slot was -x^-2, with
+    /// lim(x->+inf) of that clearing it outright (1/x^2 -> 0) -- a threat the
+    /// human's hand could execute next turn. The AI needed to either change
+    /// what's in that slot or occupy more of its own slots so losing this one
+    /// wouldn't clear its whole side, but instead attacked the human's own
+    /// field, walking into the loss. Root cause traced to PowBasisNode: it
+    /// ignored the sign of the exponent whenever the base was already infinite
+    /// (the shape this limit reaches via the Pow branch's is_inf short-circuit
+    /// in math/limits.rs), always returning INF -- so lim(x->+inf) of x^-2
+    /// incorrectly computed INF instead of 0, hiding the threat from
+    /// has_winning_move/filter_out_losing_moves entirely. See
+    /// test_limit_inf_of_negative_power in tests/limits.rs for the direct,
+    /// math-level regression test of that root cause; this test additionally
+    /// confirms the AI's move selection actually defends once the underlying
+    /// math is correct
+    #[test]
+    fn test_ai_defends_against_a_limit_based_threat_on_an_inverse_power_slot() {
+        use crate::basis::builders::PowBasisNode;
+        let mut field = Field::new();
+        field[0] = FieldBasis::new(&PowBasisNode(-2, 1, &Basis::x()).with_coefficient(-1));
+        field[1] = FieldBasis::none();
+        field[2] = FieldBasis::none();
+        field[3] = FieldBasis::new(&Basis::from(1));
+        field[4] = FieldBasis::new(&Basis::from(BasisCard::X));
+        field[5] = FieldBasis::new(&Basis::from(BasisCard::X2));
+
+        let ai_hand = vec![
+            Card::BasisCard(BasisCard::E),
+            Card::BasisCard(BasisCard::E),
+            Card::AlgebraicCard(AlgebraicCard::Mult),
+            Card::AlgebraicCard(AlgebraicCard::Sqrt),
+            Card::AlgebraicCard(AlgebraicCard::Div),
+            Card::DerivativeCard(DerivativeCard::Derivative),
+            Card::DerivativeCard(DerivativeCard::Integral),
+        ];
+        let opponent_hand = vec![
+            Card::AlgebraicCard(AlgebraicCard::Mult),
+            Card::BasisCard(BasisCard::Sin),
+            Card::AlgebraicCard(AlgebraicCard::Inverse),
+            Card::AlgebraicCard(AlgebraicCard::Inverse),
+            Card::LimitCard(LimitCard::LimPosInf),
+            Card::AlgebraicCard(AlgebraicCard::Mult),
+            Card::AlgebraicCard(AlgebraicCard::Log),
+        ];
+
+        assert!(
+            has_winning_move(1, &opponent_hand, &field, 5),
+            "test setup is wrong: the human's hand should have a winning reply \
+             (lim(x->+inf) of -x^-2) against the AI's untouched starting field"
+        );
+
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+
+        assert!(
+            !has_winning_move(1, &opponent_hand, &chosen.resulting_field, 5),
+            "AI chose a move that leaves the human a winning lim(x->+inf) reply \
+             against the AI's -x^-2 slot, instead of defusing it -- chosen.clicks={:?}",
+            chosen.clicks
+        );
+    }
 }
