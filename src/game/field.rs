@@ -71,6 +71,28 @@ impl Field {
 
         self.basis[i].history = HashMap::default();
     }
+
+    /// clears the later of any two same-side slots whose bases are scalar
+    /// multiples of each other (eg. x and 2x) -- mirrors the end-of-turn cleanup
+    /// in events/mousedown_handler.rs::end_turn, which runs this same check when
+    /// ALLOW_LINEAR_DEPENDENCE is off (the default). Exposed here so the AI's own
+    /// move evaluation (see game/ai.rs) can predict this outcome instead of
+    /// scoring a resulting_field the real game will silently mutate further
+    pub fn clear_linearly_dependent_pairs(&mut self) {
+        for &(start, end) in &[(0usize, 3usize), (3usize, 6usize)] {
+            for i in start..end {
+                for j in (i + 1)..end {
+                    if self[i].basis.is_some()
+                        && self[j].basis.is_some()
+                        && self[i].basis.as_ref().unwrap().with_coefficient(1)
+                            == self[j].basis.as_ref().unwrap().with_coefficient(1)
+                    {
+                        self[j] = FieldBasis::none();
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl<Idx> Index<Idx> for Field

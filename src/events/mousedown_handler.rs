@@ -419,31 +419,8 @@ fn end_turn() {
 
     let flag = unsafe { ALLOW_LINEAR_DEPENDENCE };
     if !flag {
-        let field = &mut game.field;
         // TODO: animate ?
-        // clear field bases that are linearly dependent
-        for i in 0..=2 {
-            for j in i + 1..=2 {
-                if field[i].basis.is_some()
-                    && field[j].basis.is_some()
-                    && field[i].basis.as_ref().unwrap().with_coefficient(1)
-                        == field[j].basis.as_ref().unwrap().with_coefficient(1)
-                {
-                    field[j] = FieldBasis::none();
-                }
-            }
-        }
-        for i in 3..6 {
-            for j in i + 1..6 {
-                if field[i].basis.is_some()
-                    && field[j].basis.is_some()
-                    && field[i].basis.as_ref().unwrap().with_coefficient(1)
-                        == field[j].basis.as_ref().unwrap().with_coefficient(1)
-                {
-                    field[j] = FieldBasis::none();
-                }
-            }
-        }
+        game.field.clear_linearly_dependent_pairs();
     }
 
     next_turn();

@@ -8,6 +8,7 @@ use crate::basis::structs::*;
 use crate::events::mousedown_handler::{branch_turn_phase, next_turn};
 use crate::game::cards::*;
 use crate::game::field::{Field, FieldBasis};
+use crate::game::flags::ALLOW_LINEAR_DEPENDENCE;
 use crate::game::structs::*;
 use crate::math::derivative::derivative;
 use crate::render::util::RenderId;
@@ -384,6 +385,23 @@ fn apply_half_to_field(half_start: usize, is_laplacian: bool, field: &Field) -> 
     new_field
 }
 
+/// applies the same same-side linear-dependence auto-clear the real game runs at
+/// end of turn (see Field::clear_linearly_dependent_pairs) to a candidate's
+/// predicted resulting_field, when ALLOW_LINEAR_DEPENDENCE is off. Without this,
+/// generate_candidates_for scored a resulting_field the real game would go on to
+/// silently mutate further -- so the AI could rate a move highly for filling one
+/// of its own slots with a basis that's just a scalar multiple of another slot it
+/// already holds, never noticing the move accomplishes nothing once the real
+/// end-of-turn cleanup re-empties that slot, and never noticing the reverse: that
+/// deliberately leaving two of the OPPONENT's slots as scalar multiples of each
+/// other is a free clear
+fn predict_resulting_field(mut resulting_field: Field) -> Field {
+    if !unsafe { ALLOW_LINEAR_DEPENDENCE } {
+        resulting_field.clear_linearly_dependent_pairs();
+    }
+    resulting_field
+}
+
 /// enumerates legal moves `player_num` knows how to evaluate from `hand` against
 /// `field`, generalized so the same logic can score the AI's own candidates and
 /// predict the opponent's best reply one ply ahead (see apply_lookahead). Mult/Div
@@ -412,6 +430,7 @@ pub(super) fn generate_candidates_for(
                         let new_basis = Basis::from(*basis_card);
                         let mut resulting_field = field.clone();
                         resulting_field[target] = FieldBasis::new(&new_basis);
+                        let resulting_field = predict_resulting_field(resulting_field);
                         let wins_immediately =
                             side_is_cleared(&resulting_field, opponent_of(player_num));
                         let hurts_self_or_helps_opponent =
@@ -431,7 +450,8 @@ pub(super) fn generate_candidates_for(
             }
             Card::DerivativeCard(DerivativeCard::Nabla) => {
                 for half_start in [0usize, 3usize] {
-                    let resulting_field = apply_half_to_field(half_start, false, field);
+                    let resulting_field =
+                        predict_resulting_field(apply_half_to_field(half_start, false, field));
                     let wins_immediately =
                         side_is_cleared(&resulting_field, opponent_of(player_num));
                     let hurts_self_or_helps_opponent =
@@ -449,7 +469,8 @@ pub(super) fn generate_candidates_for(
             }
             Card::DerivativeCard(DerivativeCard::Laplacian) if turn_number >= 2 => {
                 for half_start in [0usize, 3usize] {
-                    let resulting_field = apply_half_to_field(half_start, true, field);
+                    let resulting_field =
+                        predict_resulting_field(apply_half_to_field(half_start, true, field));
                     let wins_immediately =
                         side_is_cleared(&resulting_field, opponent_of(player_num));
                     let hurts_self_or_helps_opponent =
@@ -513,6 +534,7 @@ pub(super) fn generate_candidates_for(
                             } else {
                                 FieldBasis::new(&result)
                             };
+                            let resulting_field = predict_resulting_field(resulting_field);
                             // creating 0 (×0 or ÷0) against an opponent slot clears
                             // it outright -- score_replacement already scores that
                             // at +200 (see "cleared an opponent slot entirely"), so
@@ -550,6 +572,7 @@ pub(super) fn generate_candidates_for(
                         } else {
                             FieldBasis::new(&result)
                         };
+                        let resulting_field = predict_resulting_field(resulting_field);
                         let wins_immediately =
                             side_is_cleared(&resulting_field, opponent_of(player_num));
                         let hurts_self_or_helps_opponent =
@@ -1511,6 +1534,9 @@ mod perf_tests {
             Card::LimitCard(LimitCard::Limsup),
         ];
 
+        unsafe {
+            ALLOW_LINEAR_DEPENDENCE = false;
+        }
         let mut rng = rand::thread_rng();
         let mut violations: Vec<String> = vec![];
         let mut checked = 0;
@@ -1525,6 +1551,18 @@ mod perf_tests {
                     field[i] = FieldBasis::new(&basis);
                 }
             }
+            // a real field can never hold two same-side slots that are scalar
+            // multiples of each other while ALLOW_LINEAR_DEPENDENCE is off -- the
+            // real game's end-of-turn cleanup (see
+            // Field::clear_linearly_dependent_pairs) maintains that invariant
+            // continuously, so a random field that happens to violate it isn't a
+            // state the AI would ever actually be asked to evaluate. Enforcing it
+            // here matters now that generate_candidates_for predicts this same
+            // cleanup (see predict_resulting_field): a candidate untouched by a
+            // pre-existing violation would otherwise still get "fixed" by the
+            // prediction, registering as a false hurts_self_or_helps_opponent hit
+            // unrelated to what that candidate actually did
+            field.clear_linearly_dependent_pairs();
             // skip fields where someone has already won -- not a real decision point
             if side_is_cleared(&field, 1) || side_is_cleared(&field, 2) {
                 continue;
@@ -1706,4 +1744,56 @@ mod perf_tests {
         );
     }
 
+    /// with ALLOW_LINEAR_DEPENDENCE off (the default), the real game silently
+    /// re-empties the later of any two same-side slots that end up as scalar
+    /// multiples of each other (see Field::clear_linearly_dependent_pairs) --
+    /// generate_candidates_for must predict that outcome, not just score the
+    /// naive resulting_field, or it can rate a move as "filling an empty own
+    /// slot" when the real game will immediately undo it
+    #[test]
+    fn test_ai_avoids_creating_a_linearly_dependent_pair_on_its_own_side() {
+        unsafe {
+            ALLOW_LINEAR_DEPENDENCE = false;
+        }
+        // AI's own side (slots 0-2): slot0 = "x" already, slot1 empty, slot2
+        // occupied (non-empty so losing it isn't self-defeating)
+        let mut field = Field::new();
+        field[0] = FieldBasis::new(&Basis::from(BasisCard::X));
+        field[1] = FieldBasis::none();
+        field[2] = FieldBasis::new(&Basis::from(BasisCard::X2));
+        field[3] = FieldBasis::new(&Basis::from(BasisCard::X2));
+        field[4] = FieldBasis::new(&Basis::from(BasisCard::X2));
+        field[5] = FieldBasis::none();
+
+        let ai_hand = vec![
+            // would create a linearly-dependent pair with slot0 (both become "x")
+            // -- the real game would immediately re-empty slot1, wasting the card
+            Card::BasisCard(BasisCard::X),
+            // safe alternative: fills slot1 with no dependence created
+            Card::BasisCard(BasisCard::Sin),
+        ];
+        // deliberately empty: an opponent hand would feed apply_lookahead's
+        // best_reply_score, which could tie-break the two candidates on
+        // something other than the auto-clear prediction this test targets
+        let opponent_hand: Vec<Card> = vec![];
+
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+
+        // hand index 0 (X, "p2=0") is the wasteful move that the real game's
+        // own-side auto-clear would immediately undo; hand index 1 (Sin, "p2=1")
+        // is the safe alternative that actually keeps slot1 filled. Checking
+        // *which* card was played (not just whether slot1 ends up occupied) is
+        // the real assertion -- without the auto-clear prediction, playing X
+        // still leaves slot1 "occupied" in the AI's (wrong) prediction too, so a
+        // slot-occupancy check alone can't tell the two moves apart
+        let played_x = chosen.clicks.contains(&RenderId::PlayerTwo0);
+        assert!(
+            !played_x,
+            "AI played X into slot1 (which the real game's own-side auto-clear would \
+             immediately undo, since slot0 is already X) instead of the safe Sin \
+             alternative that actually keeps the slot filled -- chosen.clicks={:?}",
+            chosen.clicks
+        );
+    }
 }
