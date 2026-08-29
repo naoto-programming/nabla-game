@@ -294,6 +294,18 @@ fn clear_priority_bonus(basis: &Basis) -> f64 {
     hard_bonus + size_bonus
 }
 
+/// past this size, growing an own slot further buys no real defensive value --
+/// only shape (see is_hard_to_clear) resists a Limit-card clear, not raw size
+/// -- and only risks the runaway expression growth reported as AI-side lag
+/// (repeated Nabla/Mult/Integral plays compounding an already-large
+/// expression into something with dozens of nodes, expensive to render and
+/// to keep re-scoring every subsequent turn). Past this cap, strengthening an
+/// own slot is penalized instead of rewarded, scaled by how far over the cap
+/// the result lands -- the mirror image of clear_priority_bonus rewarding a
+/// LARGER opponent target: bigger is better to attack, but not to build past
+/// a reasonable point
+const OWN_SIDE_COMPLEXITY_CAP: u32 = 8;
+
 /// scores replacing `field[target]` with `new_basis`, from `evaluating_player`'s
 /// point of view: rewards clearing/simplifying the OTHER player's slot (progress
 /// toward winning), penalises clearing evaluating_player's own slot. Reused both to
@@ -333,7 +345,13 @@ fn score_replacement(evaluating_player: u32, target: usize, new_basis: &Basis, f
         } else if new_size < old_size {
             (new_size as f64 - old_size as f64) * 5.0 // penalize simplifying own slot (negative: new < old)
         } else if new_size > old_size {
-            (new_size as f64 - old_size as f64) * 2.0 // mildly reward strengthening own slot (positive: new > old)
+            if new_size > OWN_SIDE_COMPLEXITY_CAP {
+                // excessive growth: penalize instead of reward, scaled by how
+                // far past the cap this move pushes the slot
+                -((new_size - OWN_SIDE_COMPLEXITY_CAP) as f64) * 10.0
+            } else {
+                (new_size as f64 - old_size as f64) * 2.0 // mildly reward strengthening own slot (positive: new > old)
+            }
         } else {
             0.0 // neutral change
         };
@@ -2100,6 +2118,37 @@ mod perf_tests {
             strengthen_score > 1.0,
             "growing the AI's own slot should score above the neutral baseline \
              (a mild reward), got {strengthen_score}"
+        );
+    }
+
+    /// regression for a real reported problem: once own-side strengthening
+    /// became a straight, uncapped reward (see the test above), the AI had an
+    /// unconditional incentive to keep growing its own field slots forever --
+    /// reported as the AI repeatedly playing Nabla/Mult/Integral on its own
+    /// side until a field slot became a multi-hundred-character formula,
+    /// laggy to render and to keep re-scoring every subsequent turn. Growing
+    /// an own slot past OWN_SIDE_COMPLEXITY_CAP must now score as a penalty,
+    /// not a reward, however much bigger the resulting slot is
+    #[test]
+    fn test_score_replacement_penalizes_growing_an_own_slot_past_the_complexity_cap() {
+        use crate::basis::builders::CosBasisNode;
+
+        let mut field = Field::new();
+        field[0] = FieldBasis::new(&Basis::from(BasisCard::X)); // own slot, size 1
+
+        // nests cos() deeply enough to push well past OWN_SIDE_COMPLEXITY_CAP (8)
+        let mut excessively_grown = Basis::x();
+        for _ in 0..10 {
+            excessively_grown = CosBasisNode(&excessively_grown);
+        }
+        assert!(basis_size(&excessively_grown) > OWN_SIDE_COMPLEXITY_CAP);
+
+        let score = score_replacement(AI_PLAYER_NUM, 0, &excessively_grown, &field);
+
+        assert!(
+            score < 1.0, // 1.0 is score_replacement's neutral baseline
+            "growing the AI's own slot past the complexity cap should be \
+             penalized, not rewarded, got {score}"
         );
     }
 
