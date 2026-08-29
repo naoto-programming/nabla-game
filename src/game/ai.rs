@@ -305,9 +305,9 @@ fn score_replacement(evaluating_player: u32, target: usize, new_basis: &Basis, f
         score += if new_size == 0 && old_size > 0 {
             -200.0 // heavily penalize clearing our own slot
         } else if new_size < old_size {
-            (old_size as f64 - new_size as f64) * 5.0 // penalize simplifying own slot
+            (new_size as f64 - old_size as f64) * 5.0 // penalize simplifying own slot (negative: new < old)
         } else if new_size > old_size {
-            (old_size as f64 - new_size as f64) * 2.0 // mildly reward strengthening own slot
+            (new_size as f64 - old_size as f64) * 2.0 // mildly reward strengthening own slot (positive: new > old)
         } else {
             0.0 // neutral change
         };
@@ -2039,6 +2039,43 @@ mod perf_tests {
             "expected the AI to place cos into the empty slot (ending with 2 own \
              slots occupied), not consolidate into 1 via Integral -- chosen.clicks={:?}",
             chosen.clicks
+        );
+    }
+
+    /// regression for a sign-flip bug in score_replacement's own-side branch:
+    /// simplifying/growing an own slot reused the opponent-side branch's
+    /// (old_size - new_size) formula verbatim, but with comments describing the
+    /// opposite intent ("penalize simplifying own slot", "mildly reward
+    /// strengthening own slot") -- the unflipped sign meant the AI's score
+    /// actually rewarded shrinking its own expressions down toward bare,
+    /// easily-cleared shapes (a constant, or plain x -- both one Limit or
+    /// Derivative card away from being wiped out) and penalized keeping/growing
+    /// them into harder-to-clear shapes. Found by decoding several real
+    /// reported losses (see match_log.rs's Copy Match Data export): in every
+    /// one, the AI's own side ended the game holding exactly this kind of
+    /// bare, undefended expression, never a sin/cos/e-rooted one
+    #[test]
+    fn test_score_replacement_rewards_strengthening_and_penalizes_simplifying_own_side() {
+        use crate::basis::builders::CosBasisNode;
+
+        let mut field = Field::new();
+        field[0] = FieldBasis::new(&Basis::from(BasisCard::X2)); // own slot (AI_PLAYER_NUM=2), size 2
+
+        // shrinks slot0 from x^2 (size 2) down to plain x (size 1)
+        let simplify_score = score_replacement(AI_PLAYER_NUM, 0, &Basis::from(BasisCard::X), &field);
+        // grows slot0 from x^2 (size 2) into cos(x^2) (size 3, and now hard-to-clear)
+        let strengthen_score =
+            score_replacement(AI_PLAYER_NUM, 0, &CosBasisNode(&Basis::from(BasisCard::X2)), &field);
+
+        assert!(
+            simplify_score < 1.0, // 1.0 is score_replacement's neutral baseline
+            "simplifying the AI's own slot should score below the neutral baseline \
+             (a mild penalty), got {simplify_score}"
+        );
+        assert!(
+            strengthen_score > 1.0,
+            "growing the AI's own slot should score above the neutral baseline \
+             (a mild reward), got {strengthen_score}"
         );
     }
 }
