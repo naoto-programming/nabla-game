@@ -696,8 +696,20 @@ fn filter_out_losing_moves(
 /// best_reply_score is what keeps that affordable
 const MEDIUM_LOOKAHEAD_POOL: usize = 15;
 /// how heavily the opponent's best reply weighs against the AI's own immediate gain
-/// when ranking moves -- increased to make AI more defensive and strategic
-const LOOKAHEAD_WEIGHT: f64 = 1.5;
+/// when ranking moves. Lowered from 1.5 -- best_reply_score's raw value scales with
+/// how MANY of the AI's own slots are occupied (more occupied slots simply gives
+/// the opponent more candidate targets to try, mechanically raising the ceiling of
+/// their best move, regardless of whether any single target is actually dangerous
+/// -- strategic_slot_bonus already rewards occupying more slots at +25/+15 apiece,
+/// but at the old weight a single likely opponent reply (worth ~150-270, comparable
+/// to score_replacement's own 200-point full-clear bonus) could out-penalize that
+/// by 5-10x, so the AI avoided spreading onto more of its own field even when doing
+/// so was the safer play (losing one of several slots isn't losing; losing your
+/// only slot is). Reproduced with two reported losses (see
+/// test_ai_prefers_occupying_more_slots_when_the_alternative_consolidates) where
+/// the AI consolidated into fewer slots specifically to dodge this inflated
+/// lookahead penalty, not because consolidating was actually better
+const LOOKAHEAD_WEIGHT: f64 = 0.1;
 
 /// re-ranks the AI's best candidates (up to `pool` of them, by current score) by
 /// subtracting a weighted estimate of the human's best reply one ply ahead, so the
@@ -1924,6 +1936,61 @@ mod perf_tests {
             !has_winning_move(1, &opponent_hand, &chosen.resulting_field, 5),
             "AI chose a move that leaves the human a winning lim(x->+inf) reply \
              against the AI's -x^-2 slot, instead of defusing it -- chosen.clicks={:?}",
+            chosen.clicks
+        );
+    }
+
+    /// reproduces a real loss: the AI's only own slot held "1" and two slots were
+    /// empty; the AI's hand could either place "cos" into an empty slot (ending
+    /// with 2 own slots occupied) or apply Integral to the "1" slot in place
+    /// (turning it into "x", staying at 1 own slot occupied). Placing cos scores
+    /// higher by score_replacement/strategic_slot_bonus alone (spreading onto more
+    /// slots is a real structural safety net -- losing one of several slots isn't
+    /// losing; losing your only slot is), but the human held limsup(x->inf), which
+    /// unconditionally simplifies any Sin/Cos-rooted expression (see limits.rs's
+    /// Cos/Sin arm) -- so placing cos also handed the human a large, easy reply.
+    /// At LOOKAHEAD_WEIGHT's old value (1.5) that reply penalty overwhelmed the
+    /// occupied-slot advantage by a wide margin; this test locks in that it no
+    /// longer does
+    #[test]
+    fn test_ai_prefers_occupying_more_slots_when_the_alternative_consolidates() {
+        use crate::basis::builders::{CosBasisNode, MultBasisNode};
+
+        let mut field = Field::new();
+        field[0] = FieldBasis::new(&Basis::from(1));
+        field[1] = FieldBasis::none();
+        field[2] = FieldBasis::none();
+        field[3] = FieldBasis::new(&MultBasisNode(vec![
+            Basis::from(BasisCard::X2),
+            CosBasisNode(&Basis::x()),
+        ]));
+        field[4] = FieldBasis::new(&Basis::x().with_coefficient(2));
+        field[5] = FieldBasis::none();
+
+        let ai_hand = vec![
+            Card::AlgebraicCard(AlgebraicCard::Log),
+            Card::DerivativeCard(DerivativeCard::Nabla),
+            Card::BasisCard(BasisCard::Cos),
+            Card::DerivativeCard(DerivativeCard::Integral),
+            Card::DerivativeCard(DerivativeCard::Derivative),
+            Card::DerivativeCard(DerivativeCard::Derivative),
+            Card::DerivativeCard(DerivativeCard::Derivative),
+        ];
+        let opponent_hand = vec![
+            Card::DerivativeCard(DerivativeCard::Integral),
+            Card::AlgebraicCard(AlgebraicCard::Sqrt),
+            Card::LimitCard(LimitCard::Limsup),
+            Card::LimitCard(LimitCard::LimPosInf),
+        ];
+
+        let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 10);
+        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 10, &field);
+
+        let own_slots_occupied = (0..3).filter(|&i| chosen.resulting_field[i].basis.is_some()).count();
+        assert_eq!(
+            own_slots_occupied, 2,
+            "expected the AI to place cos into the empty slot (ending with 2 own \
+             slots occupied), not consolidate into 1 via Integral -- chosen.clicks={:?}",
             chosen.clicks
         );
     }
