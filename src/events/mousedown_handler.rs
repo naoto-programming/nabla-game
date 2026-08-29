@@ -73,15 +73,6 @@ pub fn handle_mousedown(str_id: String) {
 /// further splits click event based on turn phase
 pub fn branch_turn_phase(id: RenderId, player_num: u32) {
     let game = unsafe { GAME.as_mut().unwrap() };
-
-    // every click, human or AI, passes through here (the AI's own clicks are
-    // dispatched directly to this function, bypassing handle_mousedown -- see
-    // try_take_ai_turn), so this is the one place that sees both sides of a
-    // PLAYAI match uniformly for the "Copy Match Data" export
-    if matches!(game.state, GameState::PLAYAI) {
-        crate::game::match_log::record_click(id);
-    }
-
     let turn = &game.turn;
     let player = if player_num == 1 {
         &game.player_1
@@ -385,10 +376,6 @@ fn multi_select_phase(multi_operator: Card, id: RenderId, player_num: u32) {
 fn end_turn() {
     let game = unsafe { GAME.as_mut().unwrap() };
 
-    if matches!(game.state, GameState::PLAYAI) {
-        crate::game::match_log::flush_turn(game.get_current_player_num());
-    }
-
     // get vector indices of cards used by player this turn
     let mut selected_indices = game
         .active
@@ -401,6 +388,18 @@ fn end_turn() {
     selected_indices.reverse();
 
     let player_num = game.get_current_player_num();
+
+    // must run before the removal loop below: hand_before has to reflect the
+    // hand exactly as the player saw it when deciding, and game.field is
+    // already the post-move field at this point (commit_or_confirm sets it
+    // before calling end_turn), so this is also the right moment to snapshot
+    // the move's outcome
+    if matches!(game.state, GameState::PLAYAI) {
+        let hand_before = if player_num == 1 { &game.player_1 } else { &game.player_2 };
+        let cards_played: Vec<Card> = selected_indices.iter().map(|&i| hand_before[i]).collect();
+        crate::game::match_log::record_turn(player_num, hand_before, cards_played, &game.field);
+    }
+
     let player = if player_num == 1 {
         &mut game.player_1
     } else {

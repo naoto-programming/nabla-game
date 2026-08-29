@@ -1,148 +1,96 @@
 //! Records a PLAYAI match's full move history so it can be exported (via the
-//! GAMEOVER "Copy Match Data" button) as one short, copy-pasteable string --
-//! meant to be pasted into a bug report so the exact reported match can be
-//! reconstructed later, not for any in-app replay/decode feature.
+//! GAMEOVER "Copy Match Data" button) as one copy-pasteable string -- meant to
+//! be pasted into a bug report so the exact reported match can be understood
+//! directly from the string, without needing to replay it through the game
+//! engine first (an earlier version of this recorded only raw clicks, which
+//! meant reconstructing what actually happened required manually re-deriving
+//! the resulting field's symbolic math by hand). Not for any in-app
+//! replay/decode feature.
 //!
-//! The starting deck (captured once, at shuffle time) plus the per-turn click
-//! log below are together sufficient to reconstruct the whole match: initial
-//! hands and every later redraw are fully determined by popping from that same
-//! deck sequence, exactly the way the real game already does (see
-//! game/structs.rs::create_players and end_turn's redraw), so nothing besides
-//! the deck order and the clicks needs to be recorded.
+//! Every completed turn records the mover, their hand as it was when they
+//! decided (so it's clear what their options actually were), which card(s)
+//! they played, and the resulting field right after -- everything needed to
+//! read a match turn-by-turn directly off the decoded string.
 
 // outer crate imports
 use crate::game::card_encoding::cards_to_bytes;
 use crate::game::cards::Card;
-use crate::render::util::RenderId;
+use crate::game::field::Field;
 
-/// maps every RenderId variant to a stable single byte, and back. Mirrors
-/// game/card_encoding.rs's card_to_byte/byte_to_card exactly, for the same
-/// reason: keeping the exported string as short as possible
-pub(super) fn render_id_to_byte(id: &RenderId) -> u8 {
-    match id {
-        RenderId::PlayerOne0 => 0,
-        RenderId::PlayerOne1 => 1,
-        RenderId::PlayerOne2 => 2,
-        RenderId::PlayerOne3 => 3,
-        RenderId::PlayerOne4 => 4,
-        RenderId::PlayerOne5 => 5,
-        RenderId::PlayerOne6 => 6,
-        RenderId::PlayerTwo0 => 7,
-        RenderId::PlayerTwo1 => 8,
-        RenderId::PlayerTwo2 => 9,
-        RenderId::PlayerTwo3 => 10,
-        RenderId::PlayerTwo4 => 11,
-        RenderId::PlayerTwo5 => 12,
-        RenderId::PlayerTwo6 => 13,
-        RenderId::Field0 => 14,
-        RenderId::Field1 => 15,
-        RenderId::Field2 => 16,
-        RenderId::Field3 => 17,
-        RenderId::Field4 => 18,
-        RenderId::Field5 => 19,
-        RenderId::Deck => 20,
-        RenderId::Deal => 21,
-        RenderId::Graveyard0 => 22,
-        RenderId::Graveyard1 => 23,
-        RenderId::Graveyard2 => 24,
-        RenderId::Cancel => 25,
-        RenderId::Multidone => 26,
-        RenderId::Confirm => 27,
-        RenderId::TurnIndicator => 28,
-    }
-}
-
-#[cfg(test)]
-pub(super) fn byte_to_render_id(byte: u8) -> Option<RenderId> {
-    match byte {
-        0 => Some(RenderId::PlayerOne0),
-        1 => Some(RenderId::PlayerOne1),
-        2 => Some(RenderId::PlayerOne2),
-        3 => Some(RenderId::PlayerOne3),
-        4 => Some(RenderId::PlayerOne4),
-        5 => Some(RenderId::PlayerOne5),
-        6 => Some(RenderId::PlayerOne6),
-        7 => Some(RenderId::PlayerTwo0),
-        8 => Some(RenderId::PlayerTwo1),
-        9 => Some(RenderId::PlayerTwo2),
-        10 => Some(RenderId::PlayerTwo3),
-        11 => Some(RenderId::PlayerTwo4),
-        12 => Some(RenderId::PlayerTwo5),
-        13 => Some(RenderId::PlayerTwo6),
-        14 => Some(RenderId::Field0),
-        15 => Some(RenderId::Field1),
-        16 => Some(RenderId::Field2),
-        17 => Some(RenderId::Field3),
-        18 => Some(RenderId::Field4),
-        19 => Some(RenderId::Field5),
-        20 => Some(RenderId::Deck),
-        21 => Some(RenderId::Deal),
-        22 => Some(RenderId::Graveyard0),
-        23 => Some(RenderId::Graveyard1),
-        24 => Some(RenderId::Graveyard2),
-        25 => Some(RenderId::Cancel),
-        26 => Some(RenderId::Multidone),
-        27 => Some(RenderId::Confirm),
-        28 => Some(RenderId::TurnIndicator),
-        _ => None,
-    }
+/// one completed turn: who moved, their hand before this move (what their
+/// options were), which card(s) they played (2 for a Mult/Div play combining
+/// a field slot with a hand card, 1 otherwise), and the field immediately
+/// after the move
+struct TurnRecord {
+    mover: u32,
+    hand_before: Vec<Card>,
+    cards_played: Vec<Card>,
+    resulting_field: Field,
 }
 
 /// the full shuffled deck as dealt at match start, before create_players splits
-/// hands off of it
+/// hands off of it -- not otherwise used by the log (every turn already carries
+/// its own hand_before snapshot), but kept so the very first turn's hand can be
+/// cross-checked against where the match actually started
 static mut STARTING_DECK: Vec<Card> = Vec::new();
-/// one entry per completed turn (both the human's and the AI's): who moved, and
-/// the exact clicks that move consisted of
-static mut TURN_LOG: Vec<(u32, Vec<RenderId>)> = Vec::new();
-/// clicks buffered so far during the turn currently in progress
-static mut CURRENT_TURN_CLICKS: Vec<RenderId> = Vec::new();
+/// one entry per completed turn (both the human's and the AI's)
+static mut TURN_LOG: Vec<TurnRecord> = Vec::new();
 
 /// call once per match, from Game::new(), with the deck immediately after
 /// shuffling and before create_players deals from it. Harmless to call for a
-/// non-PLAYAI match too (record_click/flush_turn are gated to PLAYAI, so the
-/// log this resets just never grows for anything else)
+/// non-PLAYAI match too (record_turn is gated to PLAYAI, so the log this
+/// resets just never grows for anything else)
 pub fn reset(deck: &[Card]) {
     unsafe {
         STARTING_DECK = deck.to_vec();
         TURN_LOG = Vec::new();
-        CURRENT_TURN_CLICKS = Vec::new();
     }
 }
 
-/// buffers one click during the current PLAYAI turn -- call from
-/// branch_turn_phase (which every click, human or AI, already passes through),
-/// gated to GameState::PLAYAI. Mirrors OnlineSession::record_click's exact
-/// exclusion rules: Confirm is a pure local commit (nothing new to record),
-/// Cancel means nothing was actually committed (discard what's buffered so far)
-pub fn record_click(id: RenderId) {
+/// call from end_turn once a move commits, before the played cards are
+/// actually removed from the hand -- see its call site for why that ordering
+/// matters (hand_before must reflect the hand as the player actually saw it)
+pub fn record_turn(mover: u32, hand_before: &[Card], cards_played: Vec<Card>, resulting_field: &Field) {
     unsafe {
-        match id {
-            RenderId::Confirm => {}
-            RenderId::Cancel => CURRENT_TURN_CLICKS.clear(),
-            _ => CURRENT_TURN_CLICKS.push(id),
-        }
+        TURN_LOG.push(TurnRecord {
+            mover,
+            hand_before: hand_before.to_vec(),
+            cards_played,
+            resulting_field: resulting_field.clone(),
+        });
     }
 }
 
-/// call from end_turn once a move actually commits, with whichever player just
-/// moved -- moves the buffered clicks into the permanent turn log
-pub fn flush_turn(mover: u32) {
-    unsafe {
-        let clicks = std::mem::take(&mut CURRENT_TURN_CLICKS);
-        if !clicks.is_empty() {
-            TURN_LOG.push((mover, clicks));
-        }
-    }
+/// serializes one field's 6 slots into their Display strings (empty string for
+/// an empty slot) -- readable directly off the decoded bytes, not a structural
+/// encoding of the Basis tree, since this log is for a human/Claude to read,
+/// not for the app itself to parse back
+fn field_slot_strings(field: &Field) -> [String; 6] {
+    std::array::from_fn(|i| field[i].basis.as_ref().map(|b| b.to_string()).unwrap_or_default())
 }
 
-/// serializes the whole recorded match into the most compact byte form:
-/// [deck_len:u16][deck bytes] [turn_count:u16] then, per turn,
-/// [mover:u8][click_count:u8][click bytes]. u16 for the two lengths that scale
-/// with things the player controls (deck size via Settings, match length); u8
-/// is enough for mover (always 1 or 2) and click_count (a single move is at
-/// most a handful of clicks)
+/// appends a length-prefixed UTF-8 string (u16 length, since a deeply nested
+/// expression's Display string can run well past 255 bytes)
+fn push_string(bytes: &mut Vec<u8>, s: &str) {
+    let s_bytes = s.as_bytes();
+    bytes.extend((s_bytes.len() as u16).to_le_bytes());
+    bytes.extend(s_bytes);
+}
+
+/// appends a length-prefixed card list (u8 count -- a hand never exceeds 7,
+/// cards_played never exceeds 2)
+fn push_cards(bytes: &mut Vec<u8>, cards: &[Card]) {
+    bytes.push(cards.len() as u8);
+    bytes.extend(cards_to_bytes(cards));
+}
+
+/// serializes the whole recorded match: [deck_len:u16][deck bytes], then
+/// [turn_count:u16] and, per turn, [mover:u8] [hand_before] [cards_played]
+/// [6 resulting-field-slot strings, in field order 0..6]. u16 for the lengths
+/// that scale with things the player controls (deck size via Settings, match
+/// length, and field-expression length for a long game's nested expressions)
 pub(super) fn encode() -> Vec<u8> {
-    let (deck, turns) = unsafe { (STARTING_DECK.clone(), TURN_LOG.clone()) };
+    let (deck, turns) = unsafe { (STARTING_DECK.clone(), &TURN_LOG) };
     let mut bytes = Vec::new();
 
     let deck_bytes = cards_to_bytes(&deck);
@@ -150,10 +98,13 @@ pub(super) fn encode() -> Vec<u8> {
     bytes.extend(deck_bytes);
 
     bytes.extend((turns.len() as u16).to_le_bytes());
-    for (mover, clicks) in &turns {
-        bytes.push(*mover as u8);
-        bytes.push(clicks.len() as u8);
-        bytes.extend(clicks.iter().map(render_id_to_byte));
+    for turn in turns {
+        bytes.push(turn.mover as u8);
+        push_cards(&mut bytes, &turn.hand_before);
+        push_cards(&mut bytes, &turn.cards_played);
+        for slot in field_slot_strings(&turn.resulting_field) {
+            push_string(&mut bytes, &slot);
+        }
     }
 
     bytes
@@ -176,93 +127,35 @@ pub fn copy_match_data_to_clipboard() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::basis::structs::Basis;
     use crate::game::cards::{AlgebraicCard, BasisCard, DerivativeCard, LimitCard};
+    use crate::game::field::FieldBasis;
+    use std::sync::Mutex;
 
-    const ALL_RENDER_IDS: [RenderId; 29] = [
-        RenderId::PlayerOne0,
-        RenderId::PlayerOne1,
-        RenderId::PlayerOne2,
-        RenderId::PlayerOne3,
-        RenderId::PlayerOne4,
-        RenderId::PlayerOne5,
-        RenderId::PlayerOne6,
-        RenderId::PlayerTwo0,
-        RenderId::PlayerTwo1,
-        RenderId::PlayerTwo2,
-        RenderId::PlayerTwo3,
-        RenderId::PlayerTwo4,
-        RenderId::PlayerTwo5,
-        RenderId::PlayerTwo6,
-        RenderId::Field0,
-        RenderId::Field1,
-        RenderId::Field2,
-        RenderId::Field3,
-        RenderId::Field4,
-        RenderId::Field5,
-        RenderId::Deck,
-        RenderId::Deal,
-        RenderId::Graveyard0,
-        RenderId::Graveyard1,
-        RenderId::Graveyard2,
-        RenderId::Cancel,
-        RenderId::Multidone,
-        RenderId::Confirm,
-        RenderId::TurnIndicator,
-    ];
+    /// these tests share STARTING_DECK/TURN_LOG (both `static mut`), and Rust's
+    /// default test runner executes tests in parallel threads -- without this,
+    /// one test's reset()/record_turn() calls race another's, corrupting both
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    #[test]
-    fn test_render_id_byte_round_trip_covers_every_variant() {
-        for id in ALL_RENDER_IDS {
-            let byte = render_id_to_byte(&id);
-            assert_eq!(
-                byte_to_render_id(byte),
-                Some(id),
-                "round trip failed for {id:?} (byte {byte})"
-            );
-        }
+    fn sample_field() -> Field {
+        let mut field = Field::new();
+        field[0] = FieldBasis::new(&Basis::from(BasisCard::Cos));
+        field[1] = FieldBasis::none();
+        field
     }
 
-    #[test]
-    fn test_render_id_to_byte_assigns_no_duplicate_bytes() {
-        let mut bytes: Vec<u8> = ALL_RENDER_IDS.iter().map(render_id_to_byte).collect();
-        bytes.sort_unstable();
-        bytes.dedup();
-        assert_eq!(
-            bytes.len(),
-            ALL_RENDER_IDS.len(),
-            "two RenderId variants share the same byte"
-        );
-    }
-
-    #[test]
-    fn test_record_click_excludes_confirm_and_cancel_clears_buffer() {
-        reset(&[]);
-        record_click(RenderId::PlayerOne0);
-        record_click(RenderId::Field0);
-        record_click(RenderId::Confirm); // must not be buffered
-        flush_turn(1);
-
-        record_click(RenderId::PlayerTwo0);
-        record_click(RenderId::Cancel); // must discard the buffer so far
-        record_click(RenderId::PlayerTwo1);
-        record_click(RenderId::Field1);
-        flush_turn(2);
-
-        let bytes = encode();
-        // [deck_len:u16=0][turn_count:u16=2]
-        // turn 1: mover=1, click_count=2, [PlayerOne0, Field0]
-        // turn 2: mover=2, click_count=2, [PlayerTwo1, Field1] (PlayerTwo0 discarded by Cancel)
-        let expected = vec![
-            0, 0, // deck_len
-            2, 0, // turn_count
-            1, 2, render_id_to_byte(&RenderId::PlayerOne0), render_id_to_byte(&RenderId::Field0),
-            2, 2, render_id_to_byte(&RenderId::PlayerTwo1), render_id_to_byte(&RenderId::Field1),
-        ];
-        assert_eq!(bytes, expected);
+    /// helper mirroring encode()'s own u16-length-prefixed string format, for
+    /// tests to build an expected byte sequence without duplicating encode()'s
+    /// internals
+    fn prefixed_string(s: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_string(&mut bytes, s);
+        bytes
     }
 
     #[test]
     fn test_encode_includes_the_starting_deck() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let deck = vec![
             Card::BasisCard(BasisCard::X),
             Card::AlgebraicCard(AlgebraicCard::Mult),
@@ -281,5 +174,73 @@ mod tests {
         let turn_count = u16::from_le_bytes([bytes[2 + deck_len], bytes[3 + deck_len]]);
         assert_eq!(turn_count, 0);
         assert_eq!(bytes.len(), 2 + deck_len + 2);
+    }
+
+    #[test]
+    fn test_encode_includes_hand_cards_played_and_resulting_field() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset(&[]);
+        let hand_before = vec![
+            Card::DerivativeCard(DerivativeCard::Integral),
+            Card::BasisCard(BasisCard::Cos),
+        ];
+        let cards_played = vec![Card::BasisCard(BasisCard::Cos)];
+        let field = sample_field();
+        record_turn(2, &hand_before, cards_played.clone(), &field);
+
+        let bytes = encode();
+        // [deck_len:u16=0][turn_count:u16=1]
+        let mut expected = vec![0, 0, 1, 0];
+        expected.push(2); // mover
+        expected.push(2); // hand_before count
+        expected.extend(cards_to_bytes(&hand_before));
+        expected.push(1); // cards_played count
+        expected.extend(cards_to_bytes(&cards_played));
+        for slot in field_slot_strings(&field) {
+            expected.extend(prefixed_string(&slot));
+        }
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn test_field_slot_strings_reads_cos_and_empty_correctly() {
+        let field = sample_field();
+        let slots = field_slot_strings(&field);
+        assert_eq!(slots[0], Basis::from(BasisCard::Cos).to_string());
+        assert_eq!(slots[1], "");
+    }
+
+    #[test]
+    fn test_two_turns_encode_and_decode_boundaries_correctly() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset(&[]);
+        record_turn(1, &[Card::BasisCard(BasisCard::X)], vec![Card::BasisCard(BasisCard::X)], &Field::new());
+        record_turn(
+            2,
+            &[Card::BasisCard(BasisCard::Cos), Card::BasisCard(BasisCard::Zero)],
+            vec![Card::BasisCard(BasisCard::Cos), Card::BasisCard(BasisCard::Zero)],
+            &sample_field(),
+        );
+
+        let bytes = encode();
+        let turn_count = u16::from_le_bytes([bytes[2], bytes[3]]);
+        assert_eq!(turn_count, 2);
+
+        // manually walk the byte stream to confirm the two turns don't overlap
+        // or corrupt each other's boundaries
+        let mut pos = 4usize;
+        for expected_mover in [1u8, 2u8] {
+            assert_eq!(bytes[pos], expected_mover);
+            pos += 1;
+            let hand_count = bytes[pos] as usize;
+            pos += 1 + hand_count;
+            let played_count = bytes[pos] as usize;
+            pos += 1 + played_count;
+            for _ in 0..6 {
+                let str_len = u16::from_le_bytes([bytes[pos], bytes[pos + 1]]) as usize;
+                pos += 2 + str_len;
+            }
+        }
+        assert_eq!(pos, bytes.len(), "byte walk didn't land exactly on the end of the buffer");
     }
 }
