@@ -24,6 +24,8 @@ pub struct Menu {
     pub main_menu_listener: EventListener,
     pub game_over_menu: Element,
     pub game_over_listener: EventListener,
+    pub copy_match_data_button: Element,
+    pub copy_match_data_listener: EventListener,
 
     pub main_menu: MainMenu,
     pub settings_menu: SettingsMenu,
@@ -84,6 +86,14 @@ impl Menu {
             },
         );
 
+        let copy_match_data_button = document
+            .get_element_by_id("gameover-COPY_MATCH_DATA")
+            .unwrap();
+        let copy_match_data_listener =
+            EventListener::new(&copy_match_data_button, "click", |_e| {
+                crate::game::match_log::copy_match_data_to_clipboard();
+            });
+
         let main_menu = MainMenu::new(document);
         let settings_menu = SettingsMenu::new(document);
         let online_menu = OnlineMenu::new(document);
@@ -95,6 +105,8 @@ impl Menu {
             main_menu_listener,
             game_over_menu,
             game_over_listener,
+            copy_match_data_button,
+            copy_match_data_listener,
             main_menu,
             settings_menu,
             online_menu,

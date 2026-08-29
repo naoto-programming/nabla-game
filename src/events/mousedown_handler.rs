@@ -73,6 +73,15 @@ pub fn handle_mousedown(str_id: String) {
 /// further splits click event based on turn phase
 pub fn branch_turn_phase(id: RenderId, player_num: u32) {
     let game = unsafe { GAME.as_mut().unwrap() };
+
+    // every click, human or AI, passes through here (the AI's own clicks are
+    // dispatched directly to this function, bypassing handle_mousedown -- see
+    // try_take_ai_turn), so this is the one place that sees both sides of a
+    // PLAYAI match uniformly for the "Copy Match Data" export
+    if matches!(game.state, GameState::PLAYAI) {
+        crate::game::match_log::record_click(id);
+    }
+
     let turn = &game.turn;
     let player = if player_num == 1 {
         &game.player_1
@@ -375,6 +384,10 @@ fn multi_select_phase(multi_operator: Card, id: RenderId, player_num: u32) {
 /// performs cleanup tasks after turn is over
 fn end_turn() {
     let game = unsafe { GAME.as_mut().unwrap() };
+
+    if matches!(game.state, GameState::PLAYAI) {
+        crate::game::match_log::flush_turn(game.get_current_player_num());
+    }
 
     // get vector indices of cards used by player this turn
     let mut selected_indices = game

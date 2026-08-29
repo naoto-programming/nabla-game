@@ -51,6 +51,7 @@ impl Game {
     pub fn new() -> Game {
         let mut deck = get_new_deck();
         deck.shuffle(&mut thread_rng());
+        super::match_log::reset(&deck);
 
         let (player_1, player_2) = create_players(&mut deck);
         return Game {
@@ -139,6 +140,14 @@ impl Game {
             .item(0)
             .unwrap()
             .set_text_content(Some(format!("Player {} wins!", winner).as_str()));
+        // the match log only ever records a PLAYAI match (see match_log's own
+        // doc) -- hide the copy button for every other mode instead of
+        // offering a button that would just copy an empty log
+        if matches!(self.state, GameState::PLAYAI) {
+            menu.copy_match_data_button.remove_attribute("hidden").ok();
+        } else {
+            menu.copy_match_data_button.set_attribute("hidden", "true").ok();
+        }
         menu.open();
         menu.activate("GAMEOVER".to_string());
     }

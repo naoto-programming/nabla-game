@@ -42,6 +42,7 @@ const translations = {
 		'credits.inspiredBy': 'Inspired by:',
 		'gameover.title': 'Game Over',
 		'gameover.restart': 'Restart?',
+		'gameover.copyMatchData': 'Copy Match Data',
 		'lang.toggle': '日本語',
 	},
 	ja: {
@@ -87,6 +88,7 @@ const translations = {
 		'credits.inspiredBy': '原作：',
 		'gameover.title': 'ゲーム終了',
 		'gameover.restart': 'もう一度プレイ？',
+		'gameover.copyMatchData': '対局データをコピー',
 		'lang.toggle': 'EN',
 	},
 };

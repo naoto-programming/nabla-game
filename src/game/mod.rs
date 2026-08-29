@@ -4,5 +4,6 @@ pub mod card_encoding;
 pub mod cards;
 pub mod field;
 pub mod flags;
+pub mod match_log;
 pub mod online;
 pub mod structs;
