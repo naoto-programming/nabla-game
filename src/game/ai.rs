@@ -235,6 +235,24 @@ fn hurts_self_or_helps_opponent(player_num: u32, field: &Field, resulting_field:
     })
 }
 
+/// true if `basis`'s top-level shape can only ever be reduced to literal zero by
+/// a Mult/Div-by-zero play. Derivative/Limit chains terminate at zero for most
+/// shapes (derivative(1)=0; Lim(x->0) of x = 0), but never for the trig/exponential
+/// family: derivative cycles endlessly among sin/cos, and a limit toward infinity
+/// is explicitly invalid for an oscillating function (see limits.rs's Cos/Sin
+/// arm), so nothing else in the AI's toolkit ever clears one of these. Used to
+/// prioritize which opponent slot a scarce Mult/Div-by-zero play should target:
+/// spending it on a slot nothing else could have cleared is strictly better than
+/// spending it on one a cheaper card would have cleared anyway
+fn is_hard_to_clear(basis: &Basis) -> bool {
+    match basis {
+        Basis::BasisNode(node) => {
+            matches!(node.operator, BasisOperator::Sin | BasisOperator::Cos | BasisOperator::E)
+        }
+        Basis::BasisLeaf(_) => false,
+    }
+}
+
 /// scores replacing `field[target]` with `new_basis`, from `evaluating_player`'s
 /// point of view: rewards clearing/simplifying the OTHER player's slot (progress
 /// toward winning), penalises clearing evaluating_player's own slot. Reused both to
@@ -255,7 +273,16 @@ fn score_replacement(evaluating_player: u32, target: usize, new_basis: &Basis, f
     let mut score = 1.0; // baseline: any legal move beats none
     if is_opponent_side {
         score += if new_size == 0 && old_size > 0 {
-            200.0 // cleared an opponent slot entirely - highest priority
+            // clearing an opponent slot is always the highest priority, but
+            // clearing one nothing else could have reached (see is_hard_to_clear)
+            // is worth even more, so a scarce Mult/Div-by-zero play gets routed to
+            // the target that actually needed it
+            let hard_bonus = if field[target].basis.as_ref().map_or(false, is_hard_to_clear) {
+                100.0
+            } else {
+                0.0
+            };
+            200.0 + hard_bonus
         } else if new_size < old_size {
             (old_size as f64 - new_size as f64) * 10.0 // strongly reward simplifying opponent
         } else if new_size > old_size {
@@ -1795,5 +1822,47 @@ mod perf_tests {
              alternative that actually keeps the slot filled -- chosen.clicks={:?}",
             chosen.clicks
         );
+    }
+
+    /// clearing an opponent slot that only a Mult/Div-by-zero play could ever
+    /// reach (see is_hard_to_clear) should be preferred over clearing one a
+    /// cheaper card could have handled anyway, when both are reachable with the
+    /// AI's one scarce zero-clear tool. Run with the two targets in both slot
+    /// orderings, so a pass can't be explained by tie-break/iteration-order luck
+    /// (see generate_candidates_for's `for target in 0..6` loop) rather than the
+    /// score itself
+    #[test]
+    fn test_ai_prioritizes_the_harder_to_clear_opponent_target() {
+        for (cos_slot, x_slot) in [(3usize, 4usize), (4usize, 3usize)] {
+            let mut field = Field::new();
+            field[0] = FieldBasis::new(&Basis::from(BasisCard::X));
+            field[1] = FieldBasis::none();
+            field[2] = FieldBasis::none();
+            field[cos_slot] = FieldBasis::new(&Basis::from(BasisCard::Cos));
+            field[x_slot] = FieldBasis::new(&Basis::from(BasisCard::X));
+            field[5] = FieldBasis::none(); // the third opponent slot, out of the way
+
+            let ai_hand = vec![
+                Card::AlgebraicCard(AlgebraicCard::Mult),
+                Card::BasisCard(BasisCard::Zero),
+            ];
+            // deliberately empty: an opponent hand would feed apply_lookahead's
+            // best_reply_score, which could tie-break the two candidates on
+            // something other than the score_replacement bonus this test targets.
+            // An empty hand makes best_reply_score 0.0 for both candidates
+            // (see its own doc), isolating the comparison to score_replacement
+            let opponent_hand: Vec<Card> = vec![];
+
+            let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
+            let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+            let targeted_cos = chosen.clicks.iter().any(|c| c.is_field() && c.key_val().1 == cos_slot);
+
+            assert!(
+                targeted_cos,
+                "cos at slot {cos_slot}, x at slot {x_slot}: expected the AI's only \
+                 zero-clear play to target the harder-to-clear cos slot, got clicks={:?}",
+                chosen.clicks
+            );
+        }
     }
 }
