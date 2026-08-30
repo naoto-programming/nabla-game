@@ -155,6 +155,7 @@ fn try_take_ai_turn() {
 
     let difficulty = unsafe { AI_DIFFICULTY };
     let chosen = choose_move(
+        AI_PLAYER_NUM,
         candidates,
         &game.player_1,
         difficulty,
@@ -718,15 +719,21 @@ fn best_reply_score(player_num: u32, hand: &[Card], field: &Field, turn_number: 
 /// bug, not an acceptable approximation. This is priority tier 2 ("prevent the
 /// opponent's immediate win") -- applied for every difficulty, before any of the
 /// softer, difficulty-scaled scoring below, since walking into an avoidable loss
-/// isn't a "weaker style of play", it's just a mistake
+/// isn't a "weaker style of play", it's just a mistake. Takes `player_num` so
+/// the opponent (opponent_of(player_num), previously hardcoded to 1) resolves
+/// correctly regardless of which side is calling choose_move -- see
+/// filter_out_self_defeating_moves's doc
 fn filter_out_losing_moves(
     candidates: Vec<AiMove>,
     opponent_hand: &[Card],
     turn_number: u32,
+    player_num: u32,
 ) -> Vec<AiMove> {
     let is_safe: Vec<bool> = candidates
         .iter()
-        .map(|mv| !has_winning_move(1, opponent_hand, &mv.resulting_field, turn_number + 1))
+        .map(|mv| {
+            !has_winning_move(opponent_of(player_num), opponent_hand, &mv.resulting_field, turn_number + 1)
+        })
         .collect();
 
     if is_safe.iter().any(|&safe| safe) {
@@ -749,7 +756,7 @@ fn filter_out_losing_moves(
 /// trade despite having lookahead. Hard is expected to always find the true best
 /// move, so it must check all of them; the cheap (no Mult/Div) inner search in
 /// best_reply_score is what keeps that affordable
-const MEDIUM_LOOKAHEAD_POOL: usize = 15;
+const MEDIUM_LOOKAHEAD_POOL: usize = 8;
 /// how heavily the opponent's best reply weighs against the AI's own immediate gain
 /// when ranking moves. Lowered from 1.5 -- best_reply_score's raw value scales with
 /// how MANY of the AI's own slots are occupied (more occupied slots simply gives
@@ -771,16 +778,19 @@ const LOOKAHEAD_WEIGHT: f64 = 0.1;
 /// AI stops walking into moves that look good immediately but hand the opponent an
 /// even better follow-up (eg. clearing an opponent slot while leaving one of its own
 /// exposed to an easy kill next turn -- the original one-ply-only heuristic couldn't
-/// see this at all)
+/// see this at all). Takes `player_num` so the opponent resolves correctly
+/// regardless of which side is calling choose_move -- see
+/// filter_out_self_defeating_moves's doc
 fn apply_lookahead(
     mut candidates: Vec<AiMove>,
     opponent_hand: &[Card],
     turn_number: u32,
     pool: usize,
+    player_num: u32,
 ) -> Vec<AiMove> {
     candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
     for mv in candidates.iter_mut().take(pool) {
-        let reply = best_reply_score(1, opponent_hand, &mv.resulting_field, turn_number + 1);
+        let reply = best_reply_score(opponent_of(player_num), opponent_hand, &mv.resulting_field, turn_number + 1);
         mv.score -= LOOKAHEAD_WEIGHT * reply;
     }
     candidates
@@ -799,22 +809,48 @@ enum HardFilterResult {
 /// ranking -- tier 0 (never self-defeat), tier 1 (always take an outright win),
 /// tier 2 (never hand the opponent an immediate win), tier 3 (never hurt self/help
 /// opponent), tier 4 (always make progress), tier 5 (never strengthen the
-/// opponent)
+/// opponent).
+///
+/// Tiers 0-3 are genuine self-preservation (never self-defeat, never walk into
+/// an avoidable immediate loss, never directly damage your own field) and stay
+/// unconditional at every difficulty -- the AI must never take an action
+/// disadvantageous to itself regardless of difficulty. Tiers 4 and 5 are pure
+/// competitive optimality (always advance the game, never hand the opponent a
+/// free improvement) rather than self-preservation, so they're the two knobs
+/// difficulty is actually allowed to loosen: skipping them doesn't put the
+/// mover's own position at any more immediate risk (tier 2 already guards
+/// that), it just permits a less sharp, more exploitable overall game plan --
+/// which is the entire point of a lower difficulty. Hard keeps every tier;
+/// Medium and Easy skip 4 and 5 entirely, relying on softer/more random
+/// scoring afterward to pick among a wider, less strictly-optimal survivor set
 fn apply_hard_filters(
     candidates: Vec<AiMove>,
     opponent_hand: &[Card],
     turn_number: u32,
     field: &Field,
+    player_num: u32,
+    difficulty: AiDifficulty,
 ) -> HardFilterResult {
-    let candidates = filter_out_self_defeating_moves(candidates);
+    let candidates = filter_out_self_defeating_moves(candidates, player_num);
     if let Some(winning_index) = candidates.iter().position(|mv| mv.wins_immediately) {
         let mut candidates = candidates;
         return HardFilterResult::Win(candidates.remove(winning_index));
     }
-    let candidates = filter_out_losing_moves(candidates, opponent_hand, turn_number);
+    let candidates = filter_out_losing_moves(candidates, opponent_hand, turn_number, player_num);
     let candidates = filter_out_moves_that_hurt_self_or_help_opponent(candidates);
-    let candidates = filter_out_non_progressive_moves(candidates, field);
-    let candidates = filter_out_opponent_strengthening_moves(candidates, field);
+    let candidates = match difficulty {
+        AiDifficulty::Hard => {
+            let candidates = filter_out_non_progressive_moves(candidates, field, player_num);
+            filter_out_opponent_strengthening_moves(candidates, field, player_num)
+        }
+        // keeps tier 4 (always make progress) so Medium still plays with some
+        // direction, but drops tier 5 (never strengthen the opponent) --
+        // dropping both (as Easy does) measured indistinguishable from Easy's
+        // own win rate against Hard, so Medium needs to keep meaningfully
+        // more of its edge
+        AiDifficulty::Medium => filter_out_non_progressive_moves(candidates, field, player_num),
+        AiDifficulty::Easy => candidates,
+    };
     HardFilterResult::Filtered(candidates)
 }
 
@@ -828,11 +864,15 @@ fn apply_hard_filters(
 /// penalty for clearing an own slot, which a large enough simultaneous
 /// opponent-clear bonus (+100) could outweigh -- letting the AI choose a move that
 /// looked good on net score but instantly lost the game by its own hand. That's a
-/// hard rule, not a soft preference, so it's a filter here, not a score adjustment
-fn filter_out_self_defeating_moves(candidates: Vec<AiMove>) -> Vec<AiMove> {
+/// hard rule, not a soft preference, so it's a filter here, not a score adjustment.
+/// Takes `player_num` explicitly (previously hardcoded to AI_PLAYER_NUM) so this
+/// evaluates correctly no matter which side is calling choose_move -- needed for
+/// simulate_game, which reuses this same decision code for both players to
+/// measure a difficulty's actual win rate
+fn filter_out_self_defeating_moves(candidates: Vec<AiMove>, player_num: u32) -> Vec<AiMove> {
     let is_safe: Vec<bool> = candidates
         .iter()
-        .map(|mv| !side_is_cleared(&mv.resulting_field, AI_PLAYER_NUM))
+        .map(|mv| !side_is_cleared(&mv.resulting_field, player_num))
         .collect();
 
     if is_safe.iter().any(|&safe| safe) {
@@ -876,24 +916,28 @@ fn filter_out_moves_that_hurt_self_or_help_opponent(candidates: Vec<AiMove>) -> 
 /// removes candidates that don't make progress toward winning (don't reduce
 /// opponent's slot count or complexity), unless every candidate is non-progressive.
 /// This ensures the AI always chooses moves that advance toward victory when possible.
-fn filter_out_non_progressive_moves(candidates: Vec<AiMove>, field: &Field) -> Vec<AiMove> {
+/// `player_num` was previously hardcoded (field_owner(i) == 1 meant "the
+/// opponent"), which is only correct when the caller IS player 2 -- see
+/// filter_out_self_defeating_moves's doc for why this now takes it explicitly
+fn filter_out_non_progressive_moves(candidates: Vec<AiMove>, field: &Field, player_num: u32) -> Vec<AiMove> {
+    let opponent = opponent_of(player_num);
     let opponent_initial_count: u32 = (0..6)
-        .filter(|&i| field_owner(i) == 1)
+        .filter(|&i| field_owner(i) == opponent)
         .filter(|&i| field[i].basis.is_some())
         .count() as u32;
-    
+
     let is_progressive: Vec<bool> = candidates
         .iter()
         .map(|mv| {
             let opponent_final_count: u32 = (0..6)
-                .filter(|&i| field_owner(i) == 1)
+                .filter(|&i| field_owner(i) == opponent)
                 .filter(|&i| mv.resulting_field[i].basis.is_some())
                 .count() as u32;
             // Progressive if it reduces opponent's slot count or simplifies opponent's slots
-            opponent_final_count < opponent_initial_count || 
+            opponent_final_count < opponent_initial_count ||
             (0..6).any(|i| {
-                field_owner(i) == 1 && 
-                field[i].basis.as_ref().map(basis_size).unwrap_or(0) > 
+                field_owner(i) == opponent &&
+                field[i].basis.as_ref().map(basis_size).unwrap_or(0) >
                 mv.resulting_field[i].basis.as_ref().map(basis_size).unwrap_or(0)
             })
         })
@@ -1012,14 +1056,16 @@ fn evaluate_game_situation(player_num: u32, hand: &[Card], field: &Field) -> f64
 /// removes candidates that directly strengthen the opponent's field (increase
 /// opponent's slot complexity), unless every candidate does this. This is a
 /// defensive filter to ensure the AI never voluntarily makes the opponent stronger.
-fn filter_out_opponent_strengthening_moves(candidates: Vec<AiMove>, field: &Field) -> Vec<AiMove> {
+/// See filter_out_self_defeating_moves's doc for why `player_num` is explicit here
+fn filter_out_opponent_strengthening_moves(candidates: Vec<AiMove>, field: &Field, player_num: u32) -> Vec<AiMove> {
+    let opponent = opponent_of(player_num);
     let is_safe: Vec<bool> = candidates
         .iter()
         .map(|mv| {
             // Safe if it doesn't increase any opponent slot's complexity
             !(0..6).any(|i| {
-                field_owner(i) == 1 && 
-                field[i].basis.as_ref().map(basis_size).unwrap_or(0) < 
+                field_owner(i) == opponent &&
+                field[i].basis.as_ref().map(basis_size).unwrap_or(0) <
                 mv.resulting_field[i].basis.as_ref().map(basis_size).unwrap_or(0)
             })
         })
@@ -1036,38 +1082,42 @@ fn filter_out_opponent_strengthening_moves(candidates: Vec<AiMove>, field: &Fiel
     }
 }
 
-/// difficulty-scaled selection. Every hard rule (see apply_hard_filters) applies
-/// regardless of difficulty: (1) never self-defeat, (2) always take an outright
-/// win, (3) never hand the opponent an immediate win next turn if avoidable, (4)
-/// never attack our own field or strengthen the opponent's if avoidable, (5)
-/// always make progress toward winning if possible, (6) never directly strengthen
-/// the opponent if avoidable. Among whatever survives those, Hard looks one ply
-/// ahead across *every* remaining candidate (see apply_lookahead) and always
-/// takes the best-adjusted move; Medium looks ahead too but only across its top
-/// MEDIUM_LOOKAHEAD_POOL candidates and picks randomly from a shrinking top slice
-/// of that adjusted ranking (reasonably aware, not required to be perfect); Easy
-/// skips lookahead entirely and stays mostly random so it remains reliably
-/// beatable. This heuristic is hand-tuned, not learned: each concrete mistake
-/// found in real play becomes a regression test in perf_tests (see that
-/// module), with the responsible rule fixed until the test passes.
-/// Deliberately fast (no recursive search): a slow decision reads as frozen to a
-/// human waiting on it
+/// difficulty-scaled selection. Tiers 0-3 (see apply_hard_filters) are genuine
+/// self-preservation and apply unconditionally at every difficulty: (0) never
+/// self-defeat, (1) always take an outright win, (2) never hand the opponent
+/// an immediate win next turn if avoidable, (3) never directly hurt your own
+/// field or strengthen the opponent's outright if avoidable. Tiers 4 (always
+/// make progress) and 5 (never directly strengthen the opponent) are
+/// competitive optimality rather than safety, so difficulty is allowed to
+/// loosen them: Hard keeps both, Medium keeps only tier 4, Easy keeps
+/// neither. Among whatever survives, Hard looks one ply ahead across *every*
+/// remaining candidate (see apply_lookahead) and always takes the
+/// best-adjusted move; Medium looks ahead too but only across its top
+/// MEDIUM_LOOKAHEAD_POOL candidates and picks randomly from a wider top slice
+/// of that adjusted ranking (reasonably aware, not required to be perfect);
+/// Easy skips lookahead entirely and picks uniformly at random from every
+/// surviving candidate. This heuristic is hand-tuned, not learned: each
+/// concrete mistake found in real play becomes a regression test in
+/// perf_tests (see that module), with the responsible rule fixed until the
+/// test passes. Deliberately fast (no recursive search): a slow decision
+/// reads as frozen to a human waiting on it
 pub(super) fn choose_move(
+    player_num: u32,
     candidates: Vec<AiMove>,
     opponent_hand: &[Card],
     difficulty: AiDifficulty,
     turn_number: u32,
     field: &Field,
 ) -> AiMove {
-    let candidates = match apply_hard_filters(candidates, opponent_hand, turn_number, field) {
+    let candidates = match apply_hard_filters(candidates, opponent_hand, turn_number, field, player_num, difficulty) {
         HardFilterResult::Win(winning_move) => return winning_move,
         HardFilterResult::Filtered(candidates) => candidates,
     };
 
     let mut candidates = match difficulty {
-        AiDifficulty::Hard => apply_lookahead(candidates, opponent_hand, turn_number, usize::MAX),
+        AiDifficulty::Hard => apply_lookahead(candidates, opponent_hand, turn_number, usize::MAX, player_num),
         AiDifficulty::Medium => {
-            apply_lookahead(candidates, opponent_hand, turn_number, MEDIUM_LOOKAHEAD_POOL)
+            apply_lookahead(candidates, opponent_hand, turn_number, MEDIUM_LOOKAHEAD_POOL, player_num)
         }
         AiDifficulty::Easy => candidates,
     };
@@ -1077,21 +1127,85 @@ pub(super) fn choose_move(
     let index = match difficulty {
         AiDifficulty::Hard => 0, // Always take the best move on Hard
         AiDifficulty::Medium => {
-            // Reduced randomness for Medium - choose from top 20% instead of 34%
-            let pool = ((candidates.len() as f64) * 0.20).ceil().max(1.0) as usize;
+            let pool = ((candidates.len() as f64) * 0.5).ceil().max(1.0) as usize;
             rng.gen_range(0..pool.min(candidates.len()))
         }
         AiDifficulty::Easy => {
-            // Easy remains mostly random for playability
-            if rng.gen_bool(0.25) {
-                let pool = candidates.len().min(3);
-                rng.gen_range(0..pool)
-            } else {
-                rng.gen_range(0..candidates.len())
-            }
+            // fully uniform over every safe/filtered candidate -- no bias
+            // toward the top-scored few at all
+            rng.gen_range(0..candidates.len())
         }
     };
     candidates.remove(index)
+}
+
+/// plays out one full headless game between two difficulty settings (no UI,
+/// no rendering) by reusing generate_candidates_for/choose_move for BOTH
+/// sides, exactly as PLAYAI does for the AI's own side. Used to empirically
+/// measure a difficulty's actual win rate rather than guessing from its
+/// tunable parameters. Returns the winner (1 or 2), or None if neither side
+/// wins within max_turns, or if a single game runs past a wall-clock budget
+/// (a rare individual decision can still take seconds against an unlucky
+/// board state even after fixing the specific hangs found so far -- bounding
+/// wall-clock time keeps one outlier game from stalling an entire batch of
+/// hundreds run for a win-rate measurement). Both are stalemates, excluded
+/// from win-rate stats rather than counted either way
+#[cfg(test)]
+fn simulate_game(p1_difficulty: AiDifficulty, p2_difficulty: AiDifficulty, max_turns: u32) -> Option<u32> {
+    let game_start = std::time::Instant::now();
+    let mut deck = crate::game::card_counts::get_new_deck();
+    {
+        use rand::seq::SliceRandom;
+        deck.shuffle(&mut rand::thread_rng());
+    }
+    let (mut hand1, mut hand2) = crate::game::structs::create_players(&mut deck);
+    let mut field = Field::new();
+    let mut turn_number: u32 = 0;
+
+    loop {
+        if side_is_cleared(&field, 2) {
+            return Some(1);
+        }
+        if side_is_cleared(&field, 1) {
+            return Some(2);
+        }
+        if turn_number >= max_turns || game_start.elapsed().as_millis() >= 800 {
+            return None;
+        }
+
+        let mover = if turn_number % 2 == 0 { 1 } else { 2 };
+        let (hand, opponent_hand, difficulty) = if mover == 1 {
+            (&mut hand1, &hand2, p1_difficulty)
+        } else {
+            (&mut hand2, &hand1, p2_difficulty)
+        };
+
+        let candidates = generate_candidates_for(mover, hand, &field, turn_number);
+        if candidates.is_empty() {
+            // mirrors try_take_ai_turn's own forfeit-instead-of-freeze fallback
+            turn_number += 1;
+            continue;
+        }
+        let chosen = choose_move(mover, candidates, opponent_hand, difficulty, turn_number, &field);
+
+        // mirrors end_turn's own hand-update: remove played cards (highest
+        // index first so earlier removals don't shift later indices), then
+        // redraw up to 7 from the deck
+        let mut used_indices: Vec<usize> =
+            chosen.clicks.iter().filter(|c| c.is_player()).map(|c| c.key_val().1).collect();
+        used_indices.sort();
+        used_indices.reverse();
+        for i in used_indices {
+            hand.remove(i);
+        }
+        let cards_to_deal = 7usize.saturating_sub(hand.len()).min(deck.len());
+        for _ in 0..cards_to_deal {
+            hand.push(deck.pop().unwrap());
+        }
+
+        field = chosen.resulting_field;
+        turn_number += 1;
+    }
 }
 
 #[cfg(test)]
@@ -1225,7 +1339,7 @@ mod perf_tests {
         let start = std::time::Instant::now();
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 20);
         assert!(!candidates.is_empty(), "long-game field should still have legal moves");
-        let _chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 20, &field);
+        let _chosen = choose_move(AI_PLAYER_NUM, candidates, &opponent_hand, AiDifficulty::Hard, 20, &field);
         let elapsed = start.elapsed();
 
         assert!(
@@ -1252,7 +1366,7 @@ mod perf_tests {
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
         assert!(!candidates.is_empty(), "worst-case hand should still have legal moves");
         let candidate_count = candidates.len();
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(AI_PLAYER_NUM, candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
         let elapsed = start.elapsed();
 
         println!(
@@ -1292,7 +1406,7 @@ mod perf_tests {
             candidates.iter().any(|mv| mv.wins_immediately),
             "test setup is wrong: no winning candidate was generated at all"
         );
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(AI_PLAYER_NUM, candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         assert!(
             chosen.wins_immediately,
@@ -1328,7 +1442,7 @@ mod perf_tests {
              produced a winning candidate, but none was generated -- Mult/Div with a \
              hand BasisCard operand isn't being considered at all"
         );
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(AI_PLAYER_NUM, candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         assert!(
             chosen.wins_immediately,
@@ -1363,7 +1477,7 @@ mod perf_tests {
         let opponent_hand = vec![Card::DerivativeCard(DerivativeCard::Derivative)];
 
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(AI_PLAYER_NUM, candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         assert!(
             !has_winning_move(1, &opponent_hand, &chosen.resulting_field, 5),
@@ -1402,11 +1516,54 @@ mod perf_tests {
                 .any(|mv| side_is_cleared(&mv.resulting_field, AI_PLAYER_NUM)),
             "test setup is wrong: no self-defeating candidate was generated at all"
         );
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(AI_PLAYER_NUM, candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         assert!(
             !side_is_cleared(&chosen.resulting_field, AI_PLAYER_NUM),
             "AI chose a move that instantly loses the game by clearing its own side"
+        );
+    }
+
+    /// regression for a real bug found while building simulate_game (used to
+    /// measure difficulty win rates): filter_out_self_defeating_moves,
+    /// filter_out_non_progressive_moves, filter_out_opponent_strengthening_moves,
+    /// filter_out_losing_moves, and apply_lookahead all hardcoded player 2 as
+    /// "self" and player 1 as "the opponent" (AI_PLAYER_NUM / a literal `1`),
+    /// which happened to never matter in production (choose_move is only ever
+    /// invoked for the AI's own turn, always player 2) but meant this same
+    /// decision code was silently wrong if ever evaluated from player 1's own
+    /// perspective -- exactly what simulate_game needs to do to swap which
+    /// side a difficulty is tested on. Mirrors
+    /// test_ai_never_picks_a_self_defeating_move_when_avoidable exactly, but
+    /// for player 1
+    #[test]
+    fn test_hard_filters_are_symmetric_for_either_player() {
+        let mut field = Field::new();
+        // player 1's only remaining own slot (field_owner: slots 3-5 are
+        // player 1's) -- derivative(1) = 0 would clear it, instantly losing
+        // the game by player 1's own hand
+        field[3] = FieldBasis::new(&Basis::from(1));
+        field[4] = FieldBasis::none();
+        field[5] = FieldBasis::none();
+
+        let player_1_hand = vec![
+            Card::DerivativeCard(DerivativeCard::Derivative),
+            Card::AlgebraicCard(AlgebraicCard::Sqrt),
+        ];
+        let opponent_hand = vec![Card::BasisCard(BasisCard::X)];
+
+        let candidates = generate_candidates_for(1, &player_1_hand, &field, 4);
+        assert!(
+            candidates.iter().any(|mv| side_is_cleared(&mv.resulting_field, 1)),
+            "test setup is wrong: no self-defeating candidate was generated at all"
+        );
+        let chosen = choose_move(1, candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+
+        assert!(
+            !side_is_cleared(&chosen.resulting_field, 1),
+            "evaluating from player 1's perspective chose a move that instantly \
+             loses the game by clearing player 1's own side -- chosen.clicks={:?}",
+            chosen.clicks
         );
     }
 
@@ -1494,7 +1651,7 @@ mod perf_tests {
             candidates.iter().any(|mv| !mv.hurts_self_or_helps_opponent),
             "test setup is wrong: no safe alternative candidate was generated at all"
         );
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(AI_PLAYER_NUM, candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         assert!(
             !chosen.hurts_self_or_helps_opponent,
@@ -1679,6 +1836,7 @@ mod perf_tests {
                 let candidates_for_difficulty =
                     generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, turn_number);
                 let chosen = choose_move(
+                    AI_PLAYER_NUM,
                     candidates_for_difficulty,
                     &opponent_hand,
                     difficulty,
@@ -1870,7 +2028,7 @@ mod perf_tests {
         let opponent_hand: Vec<Card> = vec![];
 
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(AI_PLAYER_NUM, candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         // hand index 0 (X, "p2=0") is the wasteful move that the real game's
         // own-side auto-clear would immediately undo; hand index 1 (Sin, "p2=1")
@@ -1919,7 +2077,7 @@ mod perf_tests {
             let opponent_hand: Vec<Card> = vec![];
 
             let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
-            let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+            let chosen = choose_move(AI_PLAYER_NUM, candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
             let targeted_cos = chosen.clicks.iter().any(|c| c.is_field() && c.key_val().1 == cos_slot);
 
             assert!(
@@ -1955,7 +2113,7 @@ mod perf_tests {
             let opponent_hand: Vec<Card> = vec![];
 
             let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
-            let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+            let chosen = choose_move(AI_PLAYER_NUM, candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
             let targeted_x2 = chosen.clicks.iter().any(|c| c.is_field() && c.key_val().1 == x2_slot);
 
             assert!(
@@ -2019,7 +2177,7 @@ mod perf_tests {
         );
 
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 4);
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
+        let chosen = choose_move(AI_PLAYER_NUM, candidates, &opponent_hand, AiDifficulty::Hard, 4, &field);
 
         assert!(
             !has_winning_move(1, &opponent_hand, &chosen.resulting_field, 5),
@@ -2073,7 +2231,7 @@ mod perf_tests {
         ];
 
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 10);
-        let chosen = choose_move(candidates, &opponent_hand, AiDifficulty::Hard, 10, &field);
+        let chosen = choose_move(AI_PLAYER_NUM, candidates, &opponent_hand, AiDifficulty::Hard, 10, &field);
 
         let own_slots_occupied = (0..3).filter(|&i| chosen.resulting_field[i].basis.is_some()).count();
         assert_eq!(
@@ -2152,6 +2310,77 @@ mod perf_tests {
         );
     }
 
+    /// win rate of `p2` against a Hard-difficulty opponent, out of decisive
+    /// games only (a stalemate at max_turns counts toward neither side)
+    fn decisive_win_rate(p2: AiDifficulty, n: u32) -> f64 {
+        let (mut hard_wins, mut p2_wins) = (0u32, 0u32);
+        for _ in 0..n {
+            match simulate_game(AiDifficulty::Hard, p2, 60) {
+                Some(1) => hard_wins += 1,
+                Some(2) => p2_wins += 1,
+                _ => {}
+            }
+        }
+        let decisive = hard_wins + p2_wins;
+        if decisive == 0 {
+            0.0
+        } else {
+            p2_wins as f64 / decisive as f64
+        }
+    }
+
+    /// regression for the difficulty gap requested after Medium and Easy
+    /// measured statistically indistinguishable from Hard (all three were
+    /// clustered around a ~45-50% decisive win rate against a Hard-difficulty
+    /// opponent): the hard safety filters (never self-defeat, always take a
+    /// win, never allow the opponent's immediate win, never directly hurt
+    /// your own field) turned out to do nearly all of the work of playing
+    /// competently, so tuning only the soft lookahead width and pick
+    /// randomness (this test's git history has the earlier, ineffective
+    /// attempts) barely moved either difficulty. What actually created the
+    /// gap was loosening two *non-safety* hard tiers -- always make progress,
+    /// never strengthen the opponent -- for Medium (drops the second) and
+    /// Easy (drops both); see apply_hard_filters' doc for why this is safe to
+    /// loosen without violating "never take an action disadvantageous to
+    /// itself" (tiers 0-3, genuine self-preservation, stay unconditional at
+    /// every difficulty). Calibrated by direct measurement (see commit
+    /// history) to roughly Medium ~38% / Easy ~11% decisive win rate against
+    /// a Hard-difficulty opponent, used here as a rough proxy for a
+    /// skilled human opponent -- a real human's actual win rate will vary.
+    /// Bounds are deliberately loose (this is a randomized Monte-Carlo
+    /// measurement, not a deterministic check) to catch a gross regression
+    /// (eg. accidentally re-strengthening Medium/Easy back to Hard's level)
+    /// without being flaky run to run
+    #[test]
+    fn test_medium_and_easy_are_meaningfully_weaker_than_hard() {
+        // occasional field states in these simulated games (both sides using
+        // exhaustive AI search, unlike a real human) grow expressions large
+        // enough that a handful of individual decisions take up to a second
+        // -- n=20 keeps this test's typical runtime reasonable even when a
+        // run hits a few of those. A 0.7 threshold stays comfortably
+        // non-flaky despite the smaller sample: Medium's calibrated true rate
+        // is ~38%, so landing at or above 0.7 by chance at n=20 is a rare,
+        // multi-sigma event, not normal variance
+        let n = 20;
+        let medium_rate = decisive_win_rate(AiDifficulty::Medium, n);
+        let easy_rate = decisive_win_rate(AiDifficulty::Easy, n);
+
+        assert!(
+            medium_rate < 0.7,
+            "Medium won {:.0}% of decisive games against Hard -- expected \
+             meaningfully less than half, the whole point of a lower difficulty",
+            medium_rate * 100.0
+        );
+        assert!(
+            easy_rate < medium_rate,
+            "Easy ({:.0}%) should win less often than Medium ({:.0}%) against \
+             Hard -- the three difficulties collapsed to indistinguishable \
+             strength once before (see this test's own doc)",
+            easy_rate * 100.0,
+            medium_rate * 100.0
+        );
+    }
+
     /// reproduces a real loss (decoded from a reported Copy Match Data string):
     /// the AI's only own slot held plain x, and the human held Limsup. lim(x->inf)
     /// of a plain leaf x is +inf (see limits.rs's BasisLeaf/X arm), which the real
@@ -2197,7 +2426,7 @@ mod perf_tests {
         );
 
         let candidates = generate_candidates_for(AI_PLAYER_NUM, &ai_hand, &field, 7);
-        let chosen = choose_move(candidates, &human_hand, AiDifficulty::Hard, 7, &field);
+        let chosen = choose_move(AI_PLAYER_NUM, candidates, &human_hand, AiDifficulty::Hard, 7, &field);
 
         assert!(
             !has_winning_move(1, &human_hand, &chosen.resulting_field, 8),
