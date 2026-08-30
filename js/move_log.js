@@ -54,13 +54,17 @@ export const js_append_move_log_entry = (playerNum, cardsText, changes, borderCo
 
 	const text =
 		lang === 'ja'
-			? `P${playerNum}: ${changesText} ${w.on} ${cardsText} を使用`
+			? `P${playerNum}: ${cardsText}を${changesText}${w.on}使用`
 			: `P${playerNum}: ${cardsText} ${w.on} ${changesText}`;
 
 	const entry = document.createElement('div');
 	entry.className = 'move-log-entry';
 	entry.style.borderColor = borderColour;
 	entry.textContent = text;
+	// entries are truncated by default (see .move-log-entry's CSS) since a
+	// long move can easily overflow the panel's width -- click to toggle
+	// showing the full text instead
+	entry.addEventListener('click', () => entry.classList.toggle('expanded'));
 	panel.appendChild(entry);
 	panel.scrollTop = panel.scrollHeight;
 };

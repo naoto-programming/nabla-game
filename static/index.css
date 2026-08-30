@@ -111,6 +111,16 @@ body * {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	cursor: pointer;
+}
+
+/* toggled by a click handler in js/move_log.js -- an entry too long for the
+   panel's width is truncated with an ellipsis by default (above); clicking
+   it wraps instead of truncating, to show the rest */
+.move-log-entry.expanded {
+	white-space: normal;
+	overflow: visible;
+	text-overflow: clip;
 }
 
 @media (max-width: 600px) {
