@@ -11,7 +11,7 @@ use wasm_bindgen::prelude::*;
 use crate::game::cards::Card;
 use crate::game::field::Field;
 use crate::game::flags::SHOW_MOVE_LOG;
-use crate::GAME;
+use crate::game::structs::Game;
 
 #[wasm_bindgen(module = "/js/move_log.js")]
 extern "C" {
@@ -36,16 +36,21 @@ fn describe_slot(field: &Field, index: usize) -> String {
 
 /// call right before a move's resulting field is actually committed (ie.
 /// where `game.field = new_field` happens, in both the immediate-commit and
-/// CONFIRM_BEFORE_PLAY-deferred paths) -- old_field must still be the
-/// pre-move field at the time of the call, and `game.active.selected` must
-/// still hold this move's clicks (same invariant end_turn's own cards_played
-/// computation relies on)
-pub fn record_move(old_field: &Field, new_field: &Field, changed_indices: &[usize]) {
+/// CONFIRM_BEFORE_PLAY-deferred paths), passing the caller's own `game`
+/// reference rather than re-fetching the GAME static independently -- the
+/// caller already holds `&mut Game` at that point, and taking a second,
+/// separate reference to the same `static mut` while that one is still live
+/// is a soundness trap (technically UB, and a real miscompilation risk under
+/// release-mode optimization, which is what the deployed build actually
+/// uses) even though the values read would otherwise be correct. `game.field`
+/// must still be the pre-move field when this is called, and
+/// `game.active.selected` must still hold this move's clicks (same
+/// invariant end_turn's own cards_played computation relies on)
+pub fn record_move(game: &Game, new_field: &Field, changed_indices: &[usize]) {
     if !unsafe { SHOW_MOVE_LOG } {
         return;
     }
 
-    let game = unsafe { GAME.as_ref().unwrap() };
     let player_num = game.get_current_player_num();
     let hand = if player_num == 1 { &game.player_1 } else { &game.player_2 };
     let cards_played: Vec<Card> = game
@@ -64,7 +69,7 @@ pub fn record_move(old_field: &Field, new_field: &Field, changed_indices: &[usiz
 
     let slots_text = changed_indices
         .iter()
-        .map(|&i| format!("slot {}: {} \u{2192} {}", i + 1, describe_slot(old_field, i), describe_slot(new_field, i)))
+        .map(|&i| format!("slot {}: {} \u{2192} {}", i + 1, describe_slot(&game.field, i), describe_slot(new_field, i)))
         .collect::<Vec<String>>()
         .join(", ");
 

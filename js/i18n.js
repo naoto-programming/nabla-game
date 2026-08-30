@@ -29,6 +29,7 @@ const translations = {
 		'settings.limitFieldBasis': 'Only allow max 3 field basis ?',
 		'settings.confirmBeforePlay':
 			'Confirm before playing a card ? (shows what the field will look like first)',
+		'settings.showMoveLog': 'Show a live log of which card was played on which card ?',
 		'settings.player1Colour': 'Player 1 Colour',
 		'settings.player2Colour': 'Player 2 Colour',
 		'settings.cardCounts': 'Change Card Counts',
@@ -75,6 +76,7 @@ const translations = {
 		'settings.limitFieldBasis': 'フィールドの基底を最大3つまでに制限する？',
 		'settings.confirmBeforePlay':
 			'カードを使う前に確認する？（先に場がどうなるかを表示します）',
+		'settings.showMoveLog': 'どのカードにどのカードを使ったかのログをリアルタイムで表示する？',
 		'settings.player1Colour': 'プレイヤー1の色',
 		'settings.player2Colour': 'プレイヤー2の色',
 		'settings.cardCounts': 'カードの枚数を変更',
