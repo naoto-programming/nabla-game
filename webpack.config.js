@@ -6,11 +6,14 @@ const CopyPlugin = require('copy-webpack-plugin');
 
 const dist = path.resolve(__dirname, 'dist');
 
-// loads TURN_URL/TURN_USERNAME/TURN_CREDENTIAL from .env.local (see
-// .env.local.example) without adding a dotenv dependency -- a minimal
-// KEY=VALUE parser is enough for this project's one use case. Missing file or
-// blank values are fine: js/online.js falls back to no TURN config (pure P2P)
-// when these are empty, same as before this existed
+// loads TURN_URL/TURN_USERNAME/TURN_CREDENTIAL, preferring real process env
+// vars (how the GitHub Actions deploy workflow passes them in, sourced from
+// repository secrets -- see .github/workflows/deploy.yml) over .env.local
+// (see .env.local.example), a git-ignored file for local dev builds that
+// can't rely on CI secrets. No dotenv dependency: a minimal KEY=VALUE parser
+// is enough for this project's one use case. Missing file/vars are fine:
+// js/online.js falls back to no TURN config (pure P2P) when these are empty,
+// same as before this existed
 const loadEnvLocal = () => {
 	const envPath = path.resolve(__dirname, '.env.local');
 	if (!fs.existsSync(envPath)) return {};
@@ -27,6 +30,7 @@ const loadEnvLocal = () => {
 	);
 };
 const envLocal = loadEnvLocal();
+const turnEnv = key => process.env[key] || envLocal[key] || '';
 
 // identifies exactly which build is live (shown bottom-right, see js/index.js) --
 // 'unknown' rather than failing the build if git isn't available for some reason
@@ -94,9 +98,9 @@ module.exports = {
 		new CopyPlugin({ patterns: [path.resolve(__dirname, 'static')] }),
 		new webpack.DefinePlugin({
 			'process.env.GIT_COMMIT_SHA': JSON.stringify(gitCommitSha),
-			'process.env.TURN_URL': JSON.stringify(envLocal.TURN_URL || ''),
-			'process.env.TURN_USERNAME': JSON.stringify(envLocal.TURN_USERNAME || ''),
-			'process.env.TURN_CREDENTIAL': JSON.stringify(envLocal.TURN_CREDENTIAL || ''),
+			'process.env.TURN_URL': JSON.stringify(turnEnv('TURN_URL')),
+			'process.env.TURN_USERNAME': JSON.stringify(turnEnv('TURN_USERNAME')),
+			'process.env.TURN_CREDENTIAL': JSON.stringify(turnEnv('TURN_CREDENTIAL')),
 		}),
 	],
 };

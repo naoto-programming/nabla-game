@@ -37,6 +37,13 @@ jobs:
 
       - run: yarn install --frozen-lockfile
       - run: yarn build
+        env:
+          # optional TURN relay for online play across restrictive NATs (see
+          # js/online.js and .env.local.example) -- set these repo secrets to
+          # enable it; the build falls back to pure P2P (STUN only) if unset
+          TURN_URL: ${{ secrets.TURN_URL }}
+          TURN_USERNAME: ${{ secrets.TURN_USERNAME }}
+          TURN_CREDENTIAL: ${{ secrets.TURN_CREDENTIAL }}
 
       - uses: actions/upload-pages-artifact@v3
         with:
