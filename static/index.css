@@ -118,6 +118,15 @@ body * {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	cursor: pointer;
+	/* without this, a flex column's default flex-shrink:1 -- combined with
+	   #move-log-entries' overflow:auto, which lifts a flex item's normal
+	   min-height:auto floor -- let entries get squeezed shorter and shorter
+	   as more piled up, compressing text down to illegibility, rather than
+	   the container actually overflowing. A fixed-height item can never
+	   satisfy scrollHeight > clientHeight by shrinking, so trimToFit (see
+	   js/move_log.js) now reliably removes old entries once they no longer
+	   fit instead of squashing every entry to cram them all in */
+	flex-shrink: 0;
 }
 
 /* toggled by a click handler in js/move_log.js -- an entry too long for the
