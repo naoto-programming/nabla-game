@@ -19,6 +19,16 @@ const WORDING = {
 	ja: { empty: '空', slot: 'スロット', on: 'に', join: '、' },
 };
 
+// removes the oldest entries (top of the DOM order -- new ones are always
+// appended at the bottom) until the remaining ones fit within the panel's
+// max-height without scrolling. Always leaves at least the newest entry,
+// even if it alone is taller than the panel
+const trimToFit = panel => {
+	while (panel.children.length > 1 && panel.scrollHeight > panel.clientHeight + 1) {
+		panel.removeChild(panel.firstElementChild);
+	}
+};
+
 /**
  * Appends one line to the on-screen move log panel (see #move-log in
  * static/index.html). The panel itself is always in the DOM; the
@@ -63,9 +73,14 @@ export const js_append_move_log_entry = (playerNum, cardsText, changes, borderCo
 	entry.textContent = text;
 	// entries are truncated by default (see .move-log-entry's CSS) since a
 	// long move can easily overflow the panel's width -- click to toggle
-	// showing the full text instead
-	entry.addEventListener('click', () => entry.classList.toggle('expanded'));
+	// showing the full text instead. Expanding can itself push the panel
+	// into overflow, so trim again afterwards, same as on append
+	entry.addEventListener('click', () => {
+		entry.classList.toggle('expanded');
+		trimToFit(panel);
+	});
 	panel.appendChild(entry);
+	trimToFit(panel);
 	panel.scrollTop = panel.scrollHeight;
 };
 
