@@ -41,20 +41,28 @@ pub fn clear_katex_element(id: String) -> Element {
 /// renders KaTeX item at pos with given size & id
 /// `clip`, if given as (width, height), constrains the element to that box and hides any
 /// overflow (used to stop long field expressions from spilling over neighbouring cards);
-/// pass `None` for unconstrained rendering (eg. an expanded/tapped card, or the graveyard)
-pub fn draw_katex<T>(item: &T, id: String, size: &str, pos: Vector2, clip: Option<(f64, f64)>) -> Element
+/// pass `None` for unconstrained rendering (eg. an expanded/tapped card, or the graveyard).
+/// `font_scale` (1.0 = unchanged) scales the rendered size down from `size`'s nominal
+/// KaTeX size -- `size` alone (a fixed LaTeX size command like "\Huge") has no notion of
+/// the actual on-screen card size, so without this an ordinary short expression already
+/// overflowed a card far smaller than whatever card size `size` was originally tuned
+/// against (mobile's field cards in particular; see draw_field's caller). `clip` still
+/// does its own, separate job on top of this -- catching a genuinely long expression that
+/// overflows even at the correctly-scaled size
+pub fn draw_katex<T>(item: &T, id: String, size: &str, pos: Vector2, clip: Option<(f64, f64)>, font_scale: f64) -> Element
 where
     T: ToLatex,
     T: Clone,
     T: std::fmt::Debug,
 {
     let element = render_katex_element(item.clone(), id, size);
+    let font_size_rule = format!("font-size: {}%;", font_scale * 100.0);
     let style_string = match clip {
         Some((width, height)) => format!(
-            "position: absolute; top: {}px; left: {}px; width: {}px; height: {}px; overflow: hidden;",
-            pos.y, pos.x, width, height
+            "position: absolute; top: {}px; left: {}px; width: {}px; height: {}px; overflow: hidden; {}",
+            pos.y, pos.x, width, height, font_size_rule
         ),
-        None => format!("position: absolute; top: {}px; left: {}px;", pos.y, pos.x),
+        None => format!("position: absolute; top: {}px; left: {}px; {}", pos.y, pos.x, font_size_rule),
     };
     element
         .set_attribute("style", style_string.as_str())

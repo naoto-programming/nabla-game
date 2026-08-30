@@ -146,7 +146,12 @@ fn draw_button(id: RenderId, text: &str) {
     draw_rect(button.x, y, button.w, button.h, button.r, id.to_string());
 
     let context = &mut canvas.context;
-    context.set_font("20px serif");
+    // proportional to the button's own height (as draw_deck already does for its
+    // remaining-count label) rather than a fixed 20px -- mobile's button strip
+    // (see update_render_constants) can be far shorter than desktop's, and a fixed
+    // size there overflowed the button, reading as a missing/broken button rather
+    // than an oversized label
+    context.set_font(&format!("{}px serif", (button.h * 0.5).min(20.0)));
     context.set_text_baseline("middle");
     context.set_text_align("center");
 
@@ -249,6 +254,7 @@ fn draw_graveyard(_id: RenderId) {
                 y: card_pos.y + card_size.y / 2.0,
             },
             None,
+            1.0,
         );
     }
 
@@ -319,6 +325,18 @@ fn draw_field(id: RenderId) {
         } else {
             Some((card.w, card.h))
         };
+        // "\Huge" (below) has no notion of the actual card size, so its text was a
+        // fixed size regardless of how small mobile's field_basis_height computes
+        // to -- scaling it down proportionally (never up: capped at 1.0, so
+        // desktop's already-correct look is unchanged) keeps ordinary expressions
+        // fitting the card instead of relying on `clip` for every single one.
+        // FIELD_KATEX_REFERENCE_HEIGHT_PX is desktop's typical field_basis_height
+        // (see field_basis_height_for), ie. the card size "\Huge" reads correctly
+        // at with no scaling applied; the 0.4 floor keeps text from shrinking past
+        // legibility on the smallest phones, leaving clip+tap-to-expand (above) as
+        // the fallback for whatever still doesn't fit at that floor
+        const FIELD_KATEX_REFERENCE_HEIGHT_PX: f64 = 288.0;
+        let font_scale = (card.h / FIELD_KATEX_REFERENCE_HEIGHT_PX).clamp(0.4, 1.0);
         draw_katex(
             basis,
             katex_element_id,
@@ -328,6 +346,7 @@ fn draw_field(id: RenderId) {
                 x: card.x + card.w / 2.0,
             },
             clip,
+            font_scale,
         );
     } else {
         clear_katex_element(katex_element_id);

@@ -177,9 +177,16 @@ impl Canvas {
 
         let hit_region_map = HashMap::new();
 
+        // read from hit_canvas_element, not canvas_element -- see resize()'s doc for
+        // why: canvas_element's own width/height attributes end up scaled by
+        // devicePixelRatio for crisp rendering, while hit_canvas_element deliberately
+        // stays 1:1 with logical (CSS-pixel) size, making it the source of truth for
+        // canvas_bounds. Both still start out at the same (default 300x150) value
+        // here regardless, since resize() -- which sets them from the real viewport
+        // size -- always runs immediately after Canvas::new()
         let canvas_bounds = Vector2 {
-            x: f64::from(canvas_element.width()),
-            y: f64::from(canvas_element.height()),
+            x: f64::from(hit_canvas_element.width()),
+            y: f64::from(hit_canvas_element.height()),
         };
 
         let canvas_center = Vector2 {
@@ -215,17 +222,41 @@ impl Canvas {
         }
     }
 
+    /// sets both canvas elements' size for the given LOGICAL (CSS-pixel) dimensions.
+    /// canvas_element's actual backing buffer is scaled up by `dpr`, with its
+    /// on-screen CSS size pinned back down to the logical size via an explicit
+    /// style, so it still occupies exactly the same viewport space while holding
+    /// enough pixels to render crisply on a high-DPI screen (previously it was
+    /// sized 1:1 with CSS pixels, so anything drawn on it -- hand cards' sprite
+    /// images especially -- came out visibly soft/blurry on phones with
+    /// devicePixelRatio > 1). hit_canvas_element deliberately stays at 1:1 --
+    /// it's an invisible colour-keyed hit-test buffer no one ever sees rendered,
+    /// and event_listeners.rs's hit lookup reads it at client_x/client_y (CSS-pixel)
+    /// coordinates directly, which would need separate adjustment to stay correct
+    /// against a scaled-up buffer for no actual benefit
+    fn apply_canvas_size(&mut self, logical_width: u32, logical_height: u32, dpr: f64) {
+        let physical_width = (f64::from(logical_width) * dpr).round() as u32;
+        let physical_height = (f64::from(logical_height) * dpr).round() as u32;
+
+        self.canvas_element.set_width(physical_width);
+        self.canvas_element.set_height(physical_height);
+        let style = self.canvas_element.style();
+        style.set_property("width", &format!("{}px", logical_width)).ok();
+        style.set_property("height", &format!("{}px", logical_height)).ok();
+
+        self.hit_canvas_element.set_width(logical_width);
+        self.hit_canvas_element.set_height(logical_height);
+    }
+
     /// recalculate canvas element sizes on resize
     pub fn resize(&mut self) {
         let window = web_sys::window().unwrap();
         let document = window.document().unwrap();
         let inner_width = window.inner_width().unwrap().as_f64().unwrap() as u32;
         let inner_height = window.inner_height().unwrap().as_f64().unwrap() as u32;
+        let dpr = window.device_pixel_ratio();
 
-        self.canvas_element.set_width(inner_width);
-        self.canvas_element.set_height(inner_height);
-        self.hit_canvas_element.set_width(inner_width);
-        self.hit_canvas_element.set_height(inner_height);
+        self.apply_canvas_size(inner_width, inner_height, dpr);
 
         self.rebounds();
         self.update_render_constants();
@@ -238,8 +269,7 @@ impl Canvas {
         let required_height = self.required_canvas_height();
         if required_height > self.canvas_bounds.y {
             let grown_height = required_height.ceil() as u32;
-            self.canvas_element.set_height(grown_height);
-            self.hit_canvas_element.set_height(grown_height);
+            self.apply_canvas_size(self.canvas_bounds.x as u32, grown_height, dpr);
             self.rebounds();
             // field_basis_height (and anything else derived from canvas_bounds.y) was
             // computed against the old, too-short height above -- without this, the
@@ -256,8 +286,7 @@ impl Canvas {
             let required_width = self.required_canvas_width();
             if required_width > self.canvas_bounds.x {
                 let grown_width = required_width.ceil() as u32;
-                self.canvas_element.set_width(grown_width);
-                self.hit_canvas_element.set_width(grown_width);
+                self.apply_canvas_size(grown_width, self.canvas_bounds.y as u32, dpr);
                 self.rebounds();
                 self.update_render_constants();
             }
@@ -270,6 +299,14 @@ impl Canvas {
                 .set_property("min-height", &format!("{}px", self.canvas_bounds.y))
                 .ok();
         }
+
+        // every apply_canvas_size call above reset canvas_element's 2D context back
+        // to an identity transform (any canvas width/height write does, even to the
+        // same value) -- scaling it by the same dpr used there means every existing
+        // draw call, written in logical/CSS-pixel coordinates throughout this
+        // module, automatically lands at full physical resolution. Must run last,
+        // exactly once, after every possible resize above
+        self.context.scale(dpr, dpr).ok();
 
         self.calculate_render_positions();
     }
@@ -313,9 +350,10 @@ impl Canvas {
 
     /// recalculate canvas bounds and center on resize
     fn rebounds(&mut self) {
+        // hit_canvas_element, not canvas_element -- see apply_canvas_size's doc
         let canvas_bounds = Vector2 {
-            x: f64::from(self.canvas_element.width()),
-            y: f64::from(self.canvas_element.height()),
+            x: f64::from(self.hit_canvas_element.width()),
+            y: f64::from(self.hit_canvas_element.height()),
         };
 
         let canvas_center = Vector2 {
