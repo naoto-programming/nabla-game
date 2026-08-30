@@ -123,12 +123,29 @@ body * {
 	text-overflow: clip;
 }
 
-@media (max-width: 600px) {
+/* below this width, src/render/util.rs's MOBILE_BREAKPOINT_PX switches the
+   canvas to its narrow-portrait layout, where the bottom hand's two rows
+   (see pos.rs's get_base_player_pos mobile branch) span nearly the full
+   canvas width -- there's no bottom corner left free there for #move-log,
+   so it moves up into MOBILE_TOP_SAFE_AREA_PX, the strip already reserved
+   above the hand for the fixed Main Menu / language-toggle buttons (kept
+   clear of those two by centering instead of sitting in a corner) */
+@media (max-width: 700px) {
 	#move-log {
-		max-width: 14em;
+		left: 50%;
+		bottom: auto;
+		/* below the Main Menu / language-toggle buttons (top: 1em, roughly
+		   2em tall including padding at this width), not beside them --
+		   centering alone isn't enough clearance since this panel's max-width
+		   would otherwise still pass under both corners */
+		top: 3.2em;
+		transform: translateX(-50%);
+		max-width: 70vw;
+		max-height: 3.6em;
 	}
 	.move-log-entry {
-		font-size: 0.8rem;
+		font-size: 0.75rem;
+		padding: 0.2em 0.4em;
 	}
 }
 
