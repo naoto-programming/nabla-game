@@ -68,6 +68,43 @@ body * {
 	transform: translate(-50%, -50%) rotate(180deg);
 }
 
+/* fixed (not absolute, unlike #katex): a HUD-style panel meant to stay in the
+   same viewport corner regardless of how tall canvas.rs's resize() makes the
+   page scroll, rather than tracking canvas content */
+#move-log {
+	position: fixed;
+	right: 1em;
+	bottom: 1em;
+	z-index: 2;
+	max-width: 18em;
+	max-height: 8em;
+	padding: 0.4em 0.6em;
+	background-color: rgba(35, 34, 72, 0.85); /* var(--color-dark), backed off to rgba() so it can be translucent */
+	color: var(--color-light);
+	font-size: 0.75rem;
+	border-radius: 0.4em;
+	pointer-events: none;
+}
+
+#move-log-entries {
+	max-height: 100%;
+	overflow-y: auto;
+	pointer-events: auto;
+}
+
+.move-log-entry {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+@media (max-width: 600px) {
+	#move-log {
+		max-width: 12em;
+		font-size: 0.65rem;
+	}
+}
+
 #menu {
 	position: fixed;
 	left: 0;

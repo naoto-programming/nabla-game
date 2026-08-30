@@ -5,5 +5,6 @@ pub mod cards;
 pub mod field;
 pub mod flags;
 pub mod match_log;
+pub mod move_log;
 pub mod online;
 pub mod structs;

@@ -17,6 +17,10 @@ pub static mut USE_FRACTIONAL_EXPONENTS: bool = true;
 pub static mut LIMIT_FIELD_BASIS: bool = true;
 /// preview the resulting field before committing to a move, requiring explicit confirmation
 pub static mut CONFIRM_BEFORE_PLAY: bool = false;
+/// show a live log of which hand card was played on which field slot -- purely
+/// a display preference (see game/move_log.rs), not synced via GameSettings
+/// since it doesn't affect game state or determinism between online peers
+pub static mut SHOW_MOVE_LOG: bool = true;
 
 /// Game settings structure for online play
 #[derive(Debug, Clone, Copy)]

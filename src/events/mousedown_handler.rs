@@ -93,6 +93,7 @@ pub fn branch_turn_phase(id: RenderId, player_num: u32) {
     // confirm button: commits the previewed move
     if id_key == "x" && id_val == 2 && matches!(turn.phase, TurnPhase::CONFIRM) {
         if let Some(pending) = game.pending.take() {
+            crate::game::move_log::record_move(&game.field, &pending.field, &pending.changed_indices);
             game.field = pending.field;
             end_turn();
         }
@@ -128,6 +129,7 @@ fn commit_or_confirm(new_field: Field, changed_indices: Vec<usize>) {
         });
         next_phase(TurnPhase::CONFIRM);
     } else {
+        crate::game::move_log::record_move(&game.field, &new_field, &changed_indices);
         game.field = new_field;
         end_turn();
     }

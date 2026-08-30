@@ -219,6 +219,7 @@ impl SettingsMenu {
             "USE_FRACTIONAL_EXPONENTS",
             "LIMIT_FIELD_BASIS",
             "CONFIRM_BEFORE_PLAY",
+            "SHOW_MOVE_LOG",
         ]
         .iter()
         .map(|state| {
@@ -229,7 +230,10 @@ impl SettingsMenu {
         .collect();
 
         let mut checkbox_listeners: HashMap<String, EventListener> = HashMap::new();
+        // fetched once, up front, for the same reason as principal_label_element below
+        let move_log_panel = document.get_element_by_id("move-log");
         for element in checkboxes.iter() {
+            let move_log_panel = move_log_panel.clone();
             let listener = EventListener::new(element, "change", move |e| {
                 let event_target = e.target().unwrap();
                 let event_target_element = event_target.dyn_ref::<HtmlInputElement>().unwrap();
@@ -247,6 +251,20 @@ impl SettingsMenu {
                         "USE_FRACTIONAL_EXPONENTS" => USE_FRACTIONAL_EXPONENTS = flag_value,
                         "LIMIT_FIELD_BASIS" => LIMIT_FIELD_BASIS = flag_value,
                         "CONFIRM_BEFORE_PLAY" => CONFIRM_BEFORE_PLAY = flag_value,
+                        "SHOW_MOVE_LOG" => {
+                            SHOW_MOVE_LOG = flag_value;
+                            // hides the panel outright when off, rather than just
+                            // gating future entries -- otherwise turning it back on
+                            // mid-match would resurface stale entries from before
+                            // it was switched off
+                            if let Some(panel) = &move_log_panel {
+                                if flag_value {
+                                    panel.remove_attribute("hidden").ok();
+                                } else {
+                                    panel.set_attribute("hidden", "true").ok();
+                                }
+                            }
+                        }
                         _ => panic!("Unknown flag name: {}", flag_name),
                     }
                 }

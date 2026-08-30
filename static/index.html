@@ -107,6 +107,13 @@
 						<input id="checkbox-CONFIRM_BEFORE_PLAY" type="checkbox" />
 						<span class="checkbox"></span>
 					</label>
+					<label class="setting-menu" for="checkbox-SHOW_MOVE_LOG">
+						<h3 data-i18n="settings.showMoveLog">
+							Show a live log of which card was played on which card ?
+						</h3>
+						<input id="checkbox-SHOW_MOVE_LOG" type="checkbox" checked />
+						<span class="checkbox"></span>
+					</label>
 
 					<label class="setting-menu" for="colour-PLAYER_1">
 						<h3 data-i18n="settings.player1Colour">Player 1 Colour</h3>
@@ -222,6 +229,9 @@
 			</div>
 		</div>
 		<div id="katex"></div>
+		<div id="move-log">
+			<div id="move-log-entries"></div>
+		</div>
 		<canvas id="canvas"></canvas>
 		<canvas id="hitCanvas" hidden></canvas>
 		<script src="index.js"></script>

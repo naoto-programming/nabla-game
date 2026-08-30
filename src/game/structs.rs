@@ -52,6 +52,7 @@ impl Game {
         let mut deck = get_new_deck();
         deck.shuffle(&mut thread_rng());
         super::match_log::reset(&deck);
+        super::move_log::reset();
 
         let (player_1, player_2) = create_players(&mut deck);
         return Game {
@@ -78,6 +79,7 @@ impl Game {
     /// up with byte-for-byte the same deck and hands, so only the host's
     /// `Game::new()` ever calls the RNG for a given match (see game/online.rs)
     pub fn from_online_parts(deck: Vec<Card>, player_1: Vec<Card>, player_2: Vec<Card>) -> Game {
+        super::move_log::reset();
         Game {
             state: GameState::MENU,
             turn: Turn {
