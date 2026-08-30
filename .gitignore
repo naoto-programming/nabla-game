@@ -3,3 +3,10 @@ pkg/
 dist/
 target/
 .DS_Store
+
+# TURN server credentials for online play (see webpack.config.js and
+# js/online.js) -- real values live here only, never in tracked source,
+# since this repo is public and the built bundle already exposes them to
+# players regardless (no backend to keep them server-side); see
+# .env.local.example for the expected format
+.env.local

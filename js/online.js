@@ -98,19 +98,33 @@ if (typeof RTCPeerConnection !== 'undefined') {
 // just keeps our rooms from colliding with unrelated apps using the same relays
 const APP_ID = 'nabla-game-naoto-programming';
 
-// Pure P2P: no TURN relay. Trystero's torrent strategy already includes its own
-// default STUN servers (Google + Cloudflare, see peer.mjs) even with no
-// turnConfig at all, so direct peer-to-peer connections (host/srflx candidates)
-// work without any configuration here. A previous version of this file used
-// metered.ca's TURN service as a relay fallback for peers behind restrictive
-// NATs, but that requires either a paid plan or staying under a small free
-// bandwidth quota (500MB/month) shared across every player -- easy to exhaust,
-// and once it is, TURN allocate requests just time out silently rather than
-// failing loudly, breaking every connection attempt until the quota resets.
-// That's worse than having no relay fallback at all. Two peers who can't
-// establish a direct path (eg. both behind symmetric NAT) simply won't be
-// able to connect to each other -- there's no code-side fix for that without
-// paying for or hosting a TURN server.
+// Trystero's torrent strategy already includes its own default STUN servers
+// (Google + Cloudflare, see peer.mjs) even with no turnConfig at all, so
+// direct peer-to-peer connections (host/srflx candidates) work without any
+// configuration here. But STUN alone can't help two peers who can't find a
+// direct path at all (eg. both behind symmetric NAT) -- that needs a TURN
+// relay. A previous version of this file used metered.ca's TURN service for
+// that, but its free tier is a 500MB/month quota shared across every player
+// of this game, easy to exhaust -- and once it is, TURN allocate requests
+// just time out silently rather than failing loudly, breaking every
+// connection attempt until the quota resets. That's worse than having no
+// relay fallback at all, so it was removed.
+//
+// TURN_URL/TURN_USERNAME/TURN_CREDENTIAL (see webpack.config.js and
+// .env.local.example) are ExpressTURN's free tier instead: 1000GB/month,
+// two orders of magnitude more headroom before the same failure mode could
+// recur. These are still static, long-lived credentials baked into the
+// public JS bundle (there's no backend here to mint short-lived ones from),
+// so anyone can extract and reuse them -- same exposure the old metered.ca
+// setup had, just with a much larger quota behind it. All three are empty
+// when .env.local doesn't exist, in which case turnConfig is simply omitted
+// and the game falls back to the pure-P2P (STUN-only) behavior described
+// above
+const buildTurnConfig = () => {
+	const { TURN_URL, TURN_USERNAME, TURN_CREDENTIAL } = process.env;
+	if (!TURN_URL || !TURN_USERNAME || !TURN_CREDENTIAL) return undefined;
+	return [{ urls: [TURN_URL], username: TURN_USERNAME, credential: TURN_CREDENTIAL }];
+};
 
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I/L
 
@@ -150,7 +164,8 @@ const attachMessageActions = () => {
 };
 
 const startRoom = code => {
-	console.log(`[online] joining room "${code}" (appId="${APP_ID}"), P2P only (no TURN)`);
+	const turnConfig = buildTurnConfig();
+	console.log(`[online] joining room "${code}" (appId="${APP_ID}"), ${turnConfig ? 'TURN relay configured' : 'P2P only (no TURN)'}`);
 	const startedAt = Date.now();
 	room = joinRoom(
 		{
@@ -161,6 +176,7 @@ const startRoom = code => {
 			// candidates (and the connection) start negotiating as they're found
 			// instead of waiting on the slowest one
 			trickleIce: true,
+			...(turnConfig && { turnConfig }),
 		},
 		code,
 		{

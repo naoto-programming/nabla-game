@@ -1,9 +1,32 @@
 const path = require('path');
+const fs = require('fs');
 const { execFileSync } = require('child_process');
 const webpack = require('webpack');
 const CopyPlugin = require('copy-webpack-plugin');
 
 const dist = path.resolve(__dirname, 'dist');
+
+// loads TURN_URL/TURN_USERNAME/TURN_CREDENTIAL from .env.local (see
+// .env.local.example) without adding a dotenv dependency -- a minimal
+// KEY=VALUE parser is enough for this project's one use case. Missing file or
+// blank values are fine: js/online.js falls back to no TURN config (pure P2P)
+// when these are empty, same as before this existed
+const loadEnvLocal = () => {
+	const envPath = path.resolve(__dirname, '.env.local');
+	if (!fs.existsSync(envPath)) return {};
+	return Object.fromEntries(
+		fs
+			.readFileSync(envPath, 'utf-8')
+			.split('\n')
+			.map(line => line.trim())
+			.filter(line => line && !line.startsWith('#'))
+			.map(line => {
+				const eq = line.indexOf('=');
+				return [line.slice(0, eq), line.slice(eq + 1)];
+			})
+	);
+};
+const envLocal = loadEnvLocal();
 
 // identifies exactly which build is live (shown bottom-right, see js/index.js) --
 // 'unknown' rather than failing the build if git isn't available for some reason
@@ -71,6 +94,9 @@ module.exports = {
 		new CopyPlugin({ patterns: [path.resolve(__dirname, 'static')] }),
 		new webpack.DefinePlugin({
 			'process.env.GIT_COMMIT_SHA': JSON.stringify(gitCommitSha),
+			'process.env.TURN_URL': JSON.stringify(envLocal.TURN_URL || ''),
+			'process.env.TURN_USERNAME': JSON.stringify(envLocal.TURN_USERNAME || ''),
+			'process.env.TURN_CREDENTIAL': JSON.stringify(envLocal.TURN_CREDENTIAL || ''),
 		}),
 	],
 };
