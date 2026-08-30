@@ -79,19 +79,25 @@ body * {
 	bottom: 1em;
 	z-index: 2;
 	max-width: 24em;
-	max-height: 14em;
-	display: flex;
-	flex-direction: column;
-	gap: 0.3em;
-	/* the panel's own box (the gaps between entries) shouldn't intercept
-	   clicks meant for the canvas underneath -- only the entries themselves
-	   (#move-log-entries, re-enabled below) need to catch pointer events,
-	   for scrolling the list */
+	/* the panel's own box shouldn't intercept clicks meant for the canvas
+	   underneath -- only the entries themselves (#move-log-entries, re-enabled
+	   below) need to catch pointer events, for scrolling the list */
 	pointer-events: none;
 }
 
+/* max-height lives here, not on #move-log, deliberately: a percentage height
+   (the previous "max-height: 100%" on this element, against #move-log's own
+   "max-height: 14em") only resolves against a DEFINITE parent height, which
+   #move-log -- sized by content up to its own max-height, not an explicit
+   height -- doesn't reliably have. That made scrollHeight/clientHeight
+   overflow checks (see trimToFit in js/move_log.js) unreliable right after
+   appending a new entry: entries piled up well past this box's intended cap
+   and only actually got trimmed once some unrelated later layout (eg.
+   clicking an entry to expand it) forced the browser to recompute a definite
+   height and notice the backlog all at once. An explicit height here needs
+   no parent cooperation to resolve correctly */
 #move-log-entries {
-	max-height: 100%;
+	max-height: 14em;
 	overflow-y: auto;
 	display: flex;
 	flex-direction: column;
@@ -141,6 +147,8 @@ body * {
 		top: 3.2em;
 		transform: translateX(-50%);
 		max-width: 70vw;
+	}
+	#move-log-entries {
 		max-height: 3.6em;
 	}
 	.move-log-entry {
