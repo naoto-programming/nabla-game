@@ -38,7 +38,17 @@ export const js_render_katex_element = (str, id) => {
 		return element;
 	}
 
+	// nothing to render into (eg. clearing a graveyard slot that was never
+	// actually populated this match -- see clear_katex_element in katex.rs,
+	// called unconditionally for 3 slots regardless of how many cards ended
+	// up there) -- katex.render throws trying to set textContent on a null
+	// node, so hand back a detached placeholder instead of crashing. Safe
+	// because a caller passing an empty str never uses the return value
+	if (!element) {
+		return document.createElement('div');
+	}
+
 	katex.render(str, element, { throwOnError: false, displayMode: true });
-	if (element) element.dataset.katexSource = str;
+	element.dataset.katexSource = str;
 	return element;
 };
