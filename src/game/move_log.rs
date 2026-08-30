@@ -12,10 +12,11 @@ use crate::game::cards::Card;
 use crate::game::field::Field;
 use crate::game::flags::SHOW_MOVE_LOG;
 use crate::game::structs::Game;
+use crate::render::util::{PLAYER_1_COLOUR, PLAYER_2_COLOUR};
 
 #[wasm_bindgen(module = "/js/move_log.js")]
 extern "C" {
-    fn js_append_move_log_entry(text: String);
+    fn js_append_move_log_entry(text: String, border_colour: String);
     fn js_clear_move_log();
 }
 
@@ -73,5 +74,12 @@ pub fn record_move(game: &Game, new_field: &Field, changed_indices: &[usize]) {
         .collect::<Vec<String>>()
         .join(", ");
 
-    js_append_move_log_entry(format!("P{}: {} on {}", player_num, cards_text, slots_text));
+    let border_colour = unsafe {
+        if player_num == 1 { PLAYER_1_COLOUR } else { PLAYER_2_COLOUR }
+    };
+
+    js_append_move_log_entry(
+        format!("P{}: {} on {}", player_num, cards_text, slots_text),
+        border_colour.to_string(),
+    );
 }

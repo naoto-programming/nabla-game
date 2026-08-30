@@ -70,29 +70,44 @@ body * {
 
 /* fixed (not absolute, unlike #katex): a HUD-style panel meant to stay in the
    same viewport corner regardless of how tall canvas.rs's resize() makes the
-   page scroll, rather than tracking canvas content */
+   page scroll, rather than tracking canvas content. Bottom-left (not
+   bottom-right, unlike a first attempt at this) -- #version-badge already
+   occupies the bottom-right corner and the two overlapped there */
 #move-log {
 	position: fixed;
-	right: 1em;
+	left: 1em;
 	bottom: 1em;
 	z-index: 2;
-	max-width: 18em;
-	max-height: 8em;
-	padding: 0.4em 0.6em;
-	background-color: rgba(35, 34, 72, 0.85); /* var(--color-dark), backed off to rgba() so it can be translucent */
-	color: var(--color-light);
-	font-size: 0.75rem;
-	border-radius: 0.4em;
+	max-width: 24em;
+	max-height: 14em;
+	display: flex;
+	flex-direction: column;
+	gap: 0.3em;
+	/* the panel's own box (the gaps between entries) shouldn't intercept
+	   clicks meant for the canvas underneath -- only the entries themselves
+	   (#move-log-entries, re-enabled below) need to catch pointer events,
+	   for scrolling the list */
 	pointer-events: none;
 }
 
 #move-log-entries {
 	max-height: 100%;
 	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 0.3em;
 	pointer-events: auto;
 }
 
 .move-log-entry {
+	/* border colour is set per-entry in js/move_log.js, from the mover's
+	   configured player colour, since it alternates turn to turn */
+	border: 2px solid;
+	border-radius: 0.4em;
+	background-color: white;
+	color: black;
+	padding: 0.3em 0.5em;
+	font-size: 0.95rem;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -100,8 +115,10 @@ body * {
 
 @media (max-width: 600px) {
 	#move-log {
-		max-width: 12em;
-		font-size: 0.65rem;
+		max-width: 14em;
+	}
+	.move-log-entry {
+		font-size: 0.8rem;
 	}
 }
 

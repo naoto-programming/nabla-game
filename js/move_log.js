@@ -5,13 +5,17 @@
  * gates whether move_log.rs ever calls this in the first place, so no
  * visibility check is needed here.
  * @param {String} text - the log line to append
+ * @param {String} borderColour - the mover's configured player colour (see
+ *   PLAYER_1_COLOUR/PLAYER_2_COLOUR), applied per-entry since it can differ
+ *   turn to turn as the two players alternate
  */
-export const js_append_move_log_entry = text => {
+export const js_append_move_log_entry = (text, borderColour) => {
 	const panel = document.getElementById('move-log-entries');
 	if (!panel) return;
 
 	const entry = document.createElement('div');
 	entry.className = 'move-log-entry';
+	entry.style.borderColor = borderColour;
 	entry.textContent = text;
 	panel.appendChild(entry);
 	panel.scrollTop = panel.scrollHeight;
