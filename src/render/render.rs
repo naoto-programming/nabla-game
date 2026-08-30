@@ -151,7 +151,23 @@ fn draw_button(id: RenderId, text: &str) {
     // (see update_render_constants) can be far shorter than desktop's, and a fixed
     // size there overflowed the button, reading as a missing/broken button rather
     // than an oversized label
-    context.set_font(&format!("{}px serif", (button.h * 0.5).min(20.0)));
+    let mut font_size = (button.h * 0.5).min(20.0);
+    context.set_font(&format!("{}px serif", font_size));
+
+    // height alone isn't enough: "Your Turn" is much wider than "Cancel" at the
+    // same font size, and button width (player_card_width * 0.6 on mobile, see
+    // update_render_constants) doesn't grow to match a longer label -- shrink
+    // further, based on the text's actual measured width, for whichever of the
+    // two constraints (height-derived size vs button width) is tighter
+    if let Ok(metrics) = context.measure_text(text) {
+        let text_width = metrics.width();
+        let max_width = button.w * 0.9;
+        if text_width > max_width && text_width > 0.0 {
+            font_size *= max_width / text_width;
+            context.set_font(&format!("{}px serif", font_size));
+        }
+    }
+
     context.set_text_baseline("middle");
     context.set_text_align("center");
 

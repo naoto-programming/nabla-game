@@ -65,6 +65,7 @@ features = [
   "HtmlInputElement",
   "HtmlSelectElement",
 	"CanvasRenderingContext2d",
+  "TextMetrics",
   "MouseEvent",
   "ImageData",
   "EventListener",
